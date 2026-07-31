@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.88"
 description = "MCP server that lets Claude Code instances across a team exchange messages, coordinate tasks, share presence and keep shared notes, backed by Postgres"
 license = "MIT"
+repository = "https://github.com/joaquinbejar/ai-crewmate"
+readme = "README.md"
+keywords = ["mcp", "claude", "agents", "coordination", "postgres"]
+categories = ["development-tools", "web-programming::http-server", "asynchronous"]
 
 [[bin]]
 name = "ai-crewmate"
