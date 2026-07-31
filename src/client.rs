@@ -155,7 +155,9 @@ pub enum LockCmd {
         #[arg(long)]
         purpose: Option<String>,
     },
-    Release { name: String },
+    Release {
+        name: String,
+    },
     List,
 }
 
@@ -171,7 +173,9 @@ pub enum TaskCmd {
         #[arg(long, value_delimiter = ',')]
         depends_on: Vec<String>,
     },
-    Show { key: String },
+    Show {
+        key: String,
+    },
     Claim {
         key: String,
         #[arg(long)]
@@ -187,7 +191,9 @@ pub enum TaskCmd {
         #[arg(long)]
         lease_seconds: Option<i64>,
     },
-    Release { key: String },
+    Release {
+        key: String,
+    },
     Done {
         key: String,
         #[arg(long)]
@@ -240,11 +246,20 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
     let (tool, args): (&str, Value) = match cmd {
         ClientCmd::Whoami => ("whoami", json!({})),
         ClientCmd::Tools => return None,
-        ClientCmd::Send { channel, to, body, reply_to } => (
+        ClientCmd::Send {
+            channel,
+            to,
+            body,
+            reply_to,
+        } => (
             "post_message",
             json!({"channel": channel, "to": to, "body": body, "reply_to": reply_to}),
         ),
-        ClientCmd::Read { scope, history, limit } => (
+        ClientCmd::Read {
+            scope,
+            history,
+            limit,
+        } => (
             "read_messages",
             json!({"scope": scope, "only_new": !history, "limit": limit}),
         ),
@@ -256,18 +271,26 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
             ("create_channel", json!({"name": name, "topic": topic}))
         }
         ClientCmd::Agents { online } => ("list_agents", json!({"online_only": online})),
-        ClientCmd::Beat { status, repo, branch, activity, ttl_seconds } => (
+        ClientCmd::Beat {
+            status,
+            repo,
+            branch,
+            activity,
+            ttl_seconds,
+        } => (
             "heartbeat",
             json!({
                 "status": status, "repo": repo, "branch": branch,
                 "activity": activity, "ttl_seconds": ttl_seconds
             }),
         ),
-        ClientCmd::Tasks { status, mine } => (
-            "list_tasks",
-            json!({"status": status, "mine_only": mine}),
-        ),
-        ClientCmd::Wait { timeout_seconds, kinds } => (
+        ClientCmd::Tasks { status, mine } => {
+            ("list_tasks", json!({"status": status, "mine_only": mine}))
+        }
+        ClientCmd::Wait {
+            timeout_seconds,
+            kinds,
+        } => (
             "wait_for_updates",
             json!({
                 "timeout_seconds": timeout_seconds,
@@ -276,7 +299,11 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
         ),
         ClientCmd::Digest { hours } => ("team_digest", json!({"hours": hours})),
         ClientCmd::Lock(lock) => match lock {
-            LockCmd::Acquire { name, ttl_seconds, purpose } => (
+            LockCmd::Acquire {
+                name,
+                ttl_seconds,
+                purpose,
+            } => (
                 "acquire_lock",
                 json!({"name": name, "ttl_seconds": ttl_seconds, "purpose": purpose}),
             ),
@@ -284,7 +311,12 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
             LockCmd::List => ("list_locks", json!({})),
         },
         ClientCmd::Task(task) => match task {
-            TaskCmd::Create { key, title, description, depends_on } => (
+            TaskCmd::Create {
+                key,
+                title,
+                description,
+                depends_on,
+            } => (
                 "create_task",
                 json!({
                     "key": key, "title": title, "description": description,
@@ -296,10 +328,9 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
                 "claim_task",
                 json!({"key": key, "lease_seconds": lease_seconds}),
             ),
-            TaskCmd::Next { lease_seconds } => (
-                "claim_next_task",
-                json!({"lease_seconds": lease_seconds}),
-            ),
+            TaskCmd::Next { lease_seconds } => {
+                ("claim_next_task", json!({"lease_seconds": lease_seconds}))
+            }
             TaskCmd::Renew { key, lease_seconds } => (
                 "renew_task_lease",
                 json!({"key": key, "lease_seconds": lease_seconds}),
@@ -309,12 +340,15 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
                 ("complete_task", json!({"key": key, "result": result}))
             }
         },
-        ClientCmd::Notes { scope, tag } => {
-            ("list_notes", json!({"scope": scope, "tag": tag}))
-        }
+        ClientCmd::Notes { scope, tag } => ("list_notes", json!({"scope": scope, "tag": tag})),
         ClientCmd::Note(note) => match note {
             NoteCmd::Get { key, scope } => ("get_note", json!({"key": key, "scope": scope})),
-            NoteCmd::Set { key, value, scope, tags } => (
+            NoteCmd::Set {
+                key,
+                value,
+                scope,
+                tags,
+            } => (
                 "set_note",
                 json!({
                     "key": key, "value": value, "scope": scope,
@@ -556,8 +590,8 @@ fn render(cmd: &ClientCmd, value: &Value) {
                 println!("(no notes)");
             }
             for n in &notes {
-                let first_line = field(&n, "value").lines().next().unwrap_or("").to_owned();
-                println!("{}/{}: {}", field(&n, "scope"), field(&n, "key"), first_line);
+                let first_line = field(n, "value").lines().next().unwrap_or("").to_owned();
+                println!("{}/{}: {}", field(n, "scope"), field(n, "key"), first_line);
             }
         }
         ClientCmd::Note(NoteCmd::Get { .. }) => {
@@ -576,7 +610,7 @@ fn render(cmd: &ClientCmd, value: &Value) {
             }
         }
         ClientCmd::Note(NoteCmd::Set { .. }) => {
-            println!("saved {}/{}", field(&value, "scope"), field(&value, "key"));
+            println!("saved {}/{}", field(value, "scope"), field(value, "key"));
         }
         ClientCmd::Note(NoteCmd::Rm { .. }) => {
             println!("{}", field(value, "detail"));
@@ -606,17 +640,21 @@ fn render(cmd: &ClientCmd, value: &Value) {
             for l in &locks {
                 println!(
                     "{:<28} {} until {}  {}",
-                    field(&l, "name"),
-                    field(&l, "holder"),
-                    field(&l, "expires_at"),
-                    field(&l, "purpose"),
+                    field(l, "name"),
+                    field(l, "holder"),
+                    field(l, "expires_at"),
+                    field(l, "purpose"),
                 );
             }
         }
         ClientCmd::Lock(LockCmd::Acquire { .. }) => {
             if value["acquired"].as_bool() == Some(true) {
                 let l = &value["lock"];
-                println!("acquired {} until {}", field(l, "name"), field(l, "expires_at"));
+                println!(
+                    "acquired {} until {}",
+                    field(l, "name"),
+                    field(l, "expires_at")
+                );
             } else {
                 println!("not acquired: {}", field(value, "reason"));
             }
@@ -640,12 +678,24 @@ fn render(cmd: &ClientCmd, value: &Value) {
                         "   {} → {} {}",
                         field(t, "key"),
                         field(t, "status"),
-                        t["claimed_by"].as_str().map(|s| format!("({s})")).unwrap_or_default(),
+                        t["claimed_by"]
+                            .as_str()
+                            .map(|s| format!("({s})"))
+                            .unwrap_or_default(),
                     );
                 }
             }
-            for n in value["notes_updated"].as_array().cloned().unwrap_or_default() {
-                println!("note {}/{} by {}", field(&n, "scope"), field(&n, "key"), field(&n, "updated_by"));
+            for n in value["notes_updated"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+            {
+                println!(
+                    "note {}/{} by {}",
+                    field(&n, "scope"),
+                    field(&n, "key"),
+                    field(&n, "updated_by")
+                );
             }
             println!(
                 "({} open, {} claimed, {} lock(s))",

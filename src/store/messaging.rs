@@ -5,9 +5,7 @@ use super::{agent_id_by_name, channel_id_by_name, normalize_channel};
 use crate::{
     auth::AuthCtx,
     error::{BusError, BusResult},
-    model::{
-        ChannelInfo, ChannelList, MessageInfo, MessageList, PostMessageResult, ts,
-    },
+    model::{ChannelInfo, ChannelList, MessageInfo, MessageList, PostMessageResult, ts},
 };
 
 const MAX_LIMIT: i64 = 200;
@@ -69,7 +67,9 @@ pub async fn create_channel(
         return Err(BusError::invalid("channel name cannot be empty"));
     }
     if name.len() > 64 {
-        return Err(BusError::invalid("channel name is limited to 64 characters"));
+        return Err(BusError::invalid(
+            "channel name is limited to 64 characters",
+        ));
     }
 
     let row: (Uuid, String, Option<String>, chrono::DateTime<chrono::Utc>) = sqlx::query_as(

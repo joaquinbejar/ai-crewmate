@@ -62,7 +62,9 @@ impl Bus {
         Parameters(args): Parameters<LockNameArgs>,
     ) -> Result<Json<Ack>, ErrorData> {
         let auth = auth_of(&ctx)?;
-        Ok(Json(locks::release_lock(&self.db, &auth, &args.name).await?))
+        Ok(Json(
+            locks::release_lock(&self.db, &auth, &args.name).await?,
+        ))
     }
 
     #[tool(description = "List the team's currently held locks: who holds what, why, until when.")]

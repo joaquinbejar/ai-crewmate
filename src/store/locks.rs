@@ -58,7 +58,9 @@ pub async fn acquire_lock(
     purpose: Option<String>,
 ) -> BusResult<LockResult> {
     let name = normalize_name(name)?;
-    let ttl = ttl_seconds.unwrap_or(DEFAULT_TTL_SECS).clamp(5, MAX_TTL_SECS);
+    let ttl = ttl_seconds
+        .unwrap_or(DEFAULT_TTL_SECS)
+        .clamp(5, MAX_TTL_SECS);
 
     let acquired: Option<(Uuid,)> = sqlx::query_as(
         r#"
@@ -119,14 +121,13 @@ pub async fn acquire_lock(
 pub async fn release_lock(pool: &PgPool, auth: &AuthCtx, name: &str) -> BusResult<Ack> {
     let name = normalize_name(name)?;
 
-    let released = sqlx::query(
-        "DELETE FROM locks WHERE team_id = $1 AND name = $2 AND holder_agent_id = $3",
-    )
-    .bind(auth.team_id)
-    .bind(&name)
-    .bind(auth.agent_id)
-    .execute(pool)
-    .await?;
+    let released =
+        sqlx::query("DELETE FROM locks WHERE team_id = $1 AND name = $2 AND holder_agent_id = $3")
+            .bind(auth.team_id)
+            .bind(&name)
+            .bind(auth.agent_id)
+            .execute(pool)
+            .await?;
 
     if released.rows_affected() > 0 {
         return Ok(Ack {

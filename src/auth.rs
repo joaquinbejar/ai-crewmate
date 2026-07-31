@@ -53,7 +53,17 @@ pub async fn resolve_token(pool: &PgPool, raw: &str) -> Result<AuthCtx, AuthErro
     }
     let hash = hash_token(raw);
 
-    let row = sqlx::query_as::<_, (Uuid, Uuid, String, Option<chrono::DateTime<chrono::Utc>>, Uuid, String)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Uuid,
+            String,
+        ),
+    >(
         r#"
         SELECT t.id, a.id, a.name, a.disabled_at, tm.id, tm.slug
         FROM api_tokens t
@@ -140,7 +150,10 @@ pub async fn require_bearer(
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or(AuthError::Missing)?

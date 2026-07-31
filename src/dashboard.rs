@@ -53,7 +53,10 @@ pub async fn render(
         headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+            .and_then(|v| {
+                v.strip_prefix("Bearer ")
+                    .or_else(|| v.strip_prefix("bearer "))
+            })
             .map(|s| s.trim().to_owned())
     });
     let Some(raw) = raw else {
@@ -66,7 +69,10 @@ pub async fn render(
     let auth = match resolve_token(&pool, &raw).await {
         Ok(a) => a,
         Err(_) => {
-            return (StatusCode::UNAUTHORIZED, Html("<h1>401</h1><p>invalid token</p>"))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Html("<h1>401</h1><p>invalid token</p>"),
+            )
                 .into_response();
         }
     };
@@ -107,22 +113,36 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
     .await?;
 
     // Presence table.
-    let agents: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>, Option<chrono::DateTime<chrono::Utc>>, bool)> =
-        sqlx::query_as(
-            r#"SELECT a.name, p.status, p.repo, p.branch, p.activity, p.updated_at,
+    let agents: Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        bool,
+    )> = sqlx::query_as(
+        r#"SELECT a.name, p.status, p.repo, p.branch, p.activity, p.updated_at,
                       COALESCE(p.expires_at > now(), false)
                FROM agents a LEFT JOIN agent_presence p ON p.agent_id = a.id
                WHERE a.team_id = $1 AND a.disabled_at IS NULL
                ORDER BY COALESCE(p.expires_at > now(), false) DESC, a.name"#,
-        )
-        .bind(auth.team_id)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(auth.team_id)
+    .fetch_all(pool)
+    .await?;
 
     // Tasks: claimed and open first, then latest done.
-    let tasks: Vec<(String, String, String, Option<String>, Option<String>, bool, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as(
-            r#"SELECT t.key, t.title, t.status, cb.name, t.result,
+    let tasks: Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        r#"SELECT t.key, t.title, t.status, cb.name, t.result,
                       EXISTS (SELECT 1 FROM task_deps td
                               JOIN tasks d ON d.id = td.blocked_by_task_id
                               WHERE td.task_id = t.id
@@ -133,25 +153,31 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
                ORDER BY CASE t.status WHEN 'claimed' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
                         t.updated_at DESC
                LIMIT 30"#,
-        )
-        .bind(auth.team_id)
-        .fetch_all(pool)
-        .await?;
-
-    // Channel tail (team-visible only; DMs never appear here).
-    let messages: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        r#"SELECT m.id, ch.name, s.name, left(m.body, 240), m.created_at
-           FROM messages m
-           JOIN channels ch ON ch.id = m.channel_id
-           JOIN agents s ON s.id = m.sender_agent_id
-           WHERE m.team_id = $1
-           ORDER BY m.id DESC LIMIT 20"#,
     )
     .bind(auth.team_id)
     .fetch_all(pool)
     .await?;
 
-    let locks: Vec<(String, String, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+    // Channel tail (team-visible only; DMs never appear here).
+    let messages: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as(
+            r#"SELECT m.id, ch.name, s.name, left(m.body, 240), m.created_at
+           FROM messages m
+           JOIN channels ch ON ch.id = m.channel_id
+           JOIN agents s ON s.id = m.sender_agent_id
+           WHERE m.team_id = $1
+           ORDER BY m.id DESC LIMIT 20"#,
+        )
+        .bind(auth.team_id)
+        .fetch_all(pool)
+        .await?;
+
+    let locks: Vec<(
+        String,
+        String,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
         r#"SELECT l.name, a.name, l.purpose, l.expires_at
            FROM locks l JOIN agents a ON a.id = l.holder_agent_id
            WHERE l.team_id = $1 AND l.expires_at > now() ORDER BY l.name"#,
@@ -160,7 +186,12 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
     .fetch_all(pool)
     .await?;
 
-    let notes: Vec<(String, String, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+    let notes: Vec<(
+        String,
+        String,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
         r#"SELECT n.scope, n.key, a.name, n.updated_at
            FROM notes n LEFT JOIN agents a ON a.id = n.updated_by
            WHERE n.team_id = $1 ORDER BY n.updated_at DESC LIMIT 15"#,
@@ -175,7 +206,10 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
         // Status: icon + label, never color alone.
         let (dot, label) = if *online {
             match status.as_deref() {
-                Some("blocked") => ("<span class=\"st st-serious\">●</span> ⛔ blocked", "blocked"),
+                Some("blocked") => (
+                    "<span class=\"st st-serious\">●</span> ⛔ blocked",
+                    "blocked",
+                ),
                 Some("busy") => ("<span class=\"st st-warning\">●</span> ⚙ busy", "busy"),
                 Some("idle") => ("<span class=\"st st-muted\">●</span> ◌ idle", "idle"),
                 _ => ("<span class=\"st st-good\">●</span> ✓ active", "active"),

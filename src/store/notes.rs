@@ -142,8 +142,12 @@ pub async fn list_notes(
 ) -> BusResult<NoteList> {
     let limit = limit.clamp(1, MAX_LIMIT);
     // `scope = None` means "every scope", so it is not normalised to 'global'.
-    let scope = scope.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
-    let tag = tag.map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty());
+    let scope = scope
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let tag = tag
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty());
 
     let rows: Vec<NoteRow> = sqlx::query_as(&format!(
         r#"{NOTE_SELECT}
@@ -177,7 +181,9 @@ pub async fn search_notes(
         return Err(BusError::invalid("search query cannot be empty"));
     }
     let limit = limit.clamp(1, MAX_LIMIT);
-    let scope = scope.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+    let scope = scope
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
 
     let rows: Vec<NoteRow> = sqlx::query_as(&format!(
         r#"{NOTE_SELECT}

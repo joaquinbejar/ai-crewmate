@@ -106,14 +106,13 @@ async fn seed_agent(pool: &PgPool, team: &str, agent: &str) -> String {
     .await
     .unwrap();
 
-    let agent_id: (Uuid,) = sqlx::query_as(
-        "INSERT INTO agents (team_id, name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(team_id.0)
-    .bind(agent)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let agent_id: (Uuid,) =
+        sqlx::query_as("INSERT INTO agents (team_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(team_id.0)
+            .bind(agent)
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     let raw = generate_token();
     sqlx::query("INSERT INTO api_tokens (agent_id, token_hash, prefix) VALUES ($1, $2, $3)")
@@ -146,7 +145,11 @@ async fn call(client: &Client, name: &str, args: Value) -> Value {
         .call_tool(CallToolRequestParams::new(name.to_string()).with_arguments(args))
         .await
         .unwrap_or_else(|e| panic!("{name} failed: {e}"));
-    assert_ne!(result.is_error, Some(true), "{name} returned an error: {result:?}");
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "{name} returned an error: {result:?}"
+    );
     result
         .structured_content
         .clone()
@@ -211,7 +214,11 @@ async fn unauthenticated_requests_are_rejected() {
     assert_eq!(resp.status(), 401, "bogus token must be rejected");
 
     // Health is deliberately open so load balancers can probe it.
-    let resp = client.get(format!("{}/health", h.base)).send().await.unwrap();
+    let resp = client
+        .get(format!("{}/health", h.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -270,7 +277,10 @@ async fn tools_are_advertised_with_schemas() {
         "search_notes",
         "delete_note",
     ] {
-        assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
+        assert!(
+            names.contains(&expected),
+            "missing tool {expected} in {names:?}"
+        );
     }
     for tool in &tools {
         assert!(
@@ -333,7 +343,10 @@ async fn direct_messages_and_channels_flow_between_two_agents() {
     )
     .await;
     let channels = call(&joaquin, "list_channels", json!({})).await;
-    assert_eq!(channels["channels"][0]["name"], "deploys", "name normalised");
+    assert_eq!(
+        channels["channels"][0]["name"], "deploys",
+        "name normalised"
+    );
 
     call(
         &marta,
@@ -356,7 +369,10 @@ async fn direct_messages_and_channels_flow_between_two_agents() {
         json!({"to": "nobody", "body": "hi"}),
     )
     .await;
-    assert!(err.contains("nobody"), "error should name the missing agent: {err}");
+    assert!(
+        err.contains("nobody"),
+        "error should name the missing agent: {err}"
+    );
 
     // A message must have exactly one target.
     let err = call_expect_error(&joaquin, "post_message", json!({"body": "hi"})).await;
@@ -411,12 +427,7 @@ async fn teams_are_isolated_from_each_other() {
     let found = call(&other_client, "search_messages", json!({"query": "vault"})).await;
     assert_eq!(found["messages"].as_array().unwrap().len(), 0);
 
-    let err = call_expect_error(
-        &other_client,
-        "get_task",
-        json!({"key": "rotate-keys"}),
-    )
-    .await;
+    let err = call_expect_error(&other_client, "get_task", json!({"key": "rotate-keys"})).await;
     assert!(err.contains("not found"), "got: {err}");
 
     let agents = call(&other_client, "list_agents", json!({})).await;
@@ -503,7 +514,14 @@ async fn a_claimed_task_cannot_be_claimed_by_someone_else() {
         .collect();
     assert_eq!(
         events,
-        vec!["created", "claimed", "claimed", "released", "claimed", "completed"]
+        vec![
+            "created",
+            "claimed",
+            "claimed",
+            "released",
+            "claimed",
+            "completed"
+        ]
     );
 
     let _ = joaquin.cancel().await;
@@ -536,7 +554,10 @@ async fn an_expired_lease_can_be_taken_over() {
     assert_eq!(listed["tasks"][0]["lease_expired"], true);
 
     let stolen = call(&marta, "claim_task", json!({"key": "long-job"})).await;
-    assert_eq!(stolen["claimed"], true, "an expired lease must be reclaimable");
+    assert_eq!(
+        stolen["claimed"], true,
+        "an expired lease must be reclaimable"
+    );
     assert_eq!(stolen["task"]["claimed_by"], "marta");
 
     // Renewing pushes the expiry back out.
@@ -586,7 +607,11 @@ async fn concurrent_claim_next_never_hands_out_the_same_task_twice() {
     }
     keys.sort();
     keys.dedup();
-    assert_eq!(keys.len(), 4, "each agent must get a distinct task: {keys:?}");
+    assert_eq!(
+        keys.len(),
+        4,
+        "each agent must get a distinct task: {keys:?}"
+    );
 
     // With nothing left, the pool is empty rather than erroring.
     let empty = call(&clients[0], "claim_next_task", json!({})).await;
@@ -743,8 +768,18 @@ async fn whoami_reports_pending_work() {
     let joaquin = connect(&h.base, &a).await;
     let marta = connect(&h.base, &b).await;
 
-    call(&marta, "post_message", json!({"to": "joaquin", "body": "ping"})).await;
-    call(&marta, "post_message", json!({"to": "joaquin", "body": "ping again"})).await;
+    call(
+        &marta,
+        "post_message",
+        json!({"to": "joaquin", "body": "ping"}),
+    )
+    .await;
+    call(
+        &marta,
+        "post_message",
+        json!({"to": "joaquin", "body": "ping again"}),
+    )
+    .await;
     call(
         &joaquin,
         "create_task",
@@ -783,12 +818,7 @@ async fn wait_for_updates_wakes_on_a_teammates_message() {
         tokio::spawn(async move {
             let client = connect(&base, &token).await;
             let started = std::time::Instant::now();
-            let result = call(
-                &client,
-                "wait_for_updates",
-                json!({"timeout_seconds": 20}),
-            )
-            .await;
+            let result = call(&client, "wait_for_updates", json!({"timeout_seconds": 20})).await;
             let _ = client.cancel().await;
             (result, started.elapsed())
         })
@@ -811,10 +841,9 @@ async fn wait_for_updates_wakes_on_a_teammates_message() {
     );
     let summaries = result["events"].as_array().unwrap();
     assert!(
-        summaries.iter().any(|e| e["summary"]
-            .as_str()
-            .unwrap()
-            .contains("marta")),
+        summaries
+            .iter()
+            .any(|e| e["summary"].as_str().unwrap().contains("marta")),
         "event should name the sender: {summaries:?}"
     );
 
@@ -866,7 +895,10 @@ async fn blocked_tasks_wait_for_their_dependencies() {
     let denied = call(&marta, "claim_task", json!({"key": "update-clients"})).await;
     assert_eq!(denied["claimed"], false);
     assert!(
-        denied["reason"].as_str().unwrap().contains("migrate-schema"),
+        denied["reason"]
+            .as_str()
+            .unwrap()
+            .contains("migrate-schema"),
         "reason should name the blocker: {denied:?}"
     );
 
@@ -878,7 +910,10 @@ async fn blocked_tasks_wait_for_their_dependencies() {
     // Finishing the dependency unblocks the dependent task.
     call(&marta, "complete_task", json!({"key": "migrate-schema"})).await;
     let now_free = call(&joaquin, "claim_task", json!({"key": "update-clients"})).await;
-    assert_eq!(now_free["claimed"], true, "unblocked after dep done: {now_free:?}");
+    assert_eq!(
+        now_free["claimed"], true,
+        "unblocked after dep done: {now_free:?}"
+    );
     assert_eq!(now_free["task"]["blocked"], false);
 
     let _ = joaquin.cancel().await;
@@ -1092,7 +1127,9 @@ async fn webhooks_forward_channel_messages_but_never_dms() {
         .map(|v| v["text"].as_str().unwrap_or_default().to_owned())
         .collect();
     assert!(
-        texts.iter().any(|t| t.contains("#deploys") && t.contains("canary verde")),
+        texts
+            .iter()
+            .any(|t| t.contains("#deploys") && t.contains("canary verde")),
         "channel message must be forwarded in Slack format: {texts:?}"
     );
     assert!(
@@ -1143,7 +1180,10 @@ async fn dashboard_requires_a_token_and_renders_team_state() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("joaquin"), "shows the agent");
     assert!(body.contains("smoke testing"), "shows the activity");
-    assert!(body.contains("#dev") || body.contains("dev"), "shows the channel");
+    assert!(
+        body.contains("#dev") || body.contains("dev"),
+        "shows the channel"
+    );
     assert!(
         !body.contains("<script>alert(1)</script>"),
         "message bodies must be HTML-escaped"

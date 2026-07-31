@@ -79,7 +79,11 @@ impl Bus {
             + Self::notes_router()
             + Self::locks_router()
             + Self::events_router();
-        Self { db, hub, tool_router }
+        Self {
+            db,
+            hub,
+            tool_router,
+        }
     }
 }
 
@@ -106,7 +110,10 @@ impl Bus {
                        how many unread direct messages you have and how many tasks \
                        you currently hold. Call this first in a session."
     )]
-    async fn whoami(&self, ctx: RequestContext<rmcp::RoleServer>) -> Result<Json<WhoAmI>, ErrorData> {
+    async fn whoami(
+        &self,
+        ctx: RequestContext<rmcp::RoleServer>,
+    ) -> Result<Json<WhoAmI>, ErrorData> {
         let auth = auth_of(&ctx)?;
         Ok(Json(store::whoami(&self.db, &auth).await?))
     }

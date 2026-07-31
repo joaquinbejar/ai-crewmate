@@ -204,21 +204,26 @@ pub async fn create_task(pool: &PgPool, auth: &AuthCtx, input: CreateInput) -> B
 }
 
 async fn fetch_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult<TaskInfo> {
-    let row: Option<TaskRow> =
-        sqlx::query_as(&format!("{TASK_SELECT} WHERE t.team_id = $1 AND t.key = $2"))
-            .bind(auth.team_id)
-            .bind(key)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<TaskRow> = sqlx::query_as(&format!(
+        "{TASK_SELECT} WHERE t.team_id = $1 AND t.key = $2"
+    ))
+    .bind(auth.team_id)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
     row.map(Into::into)
         .ok_or_else(|| BusError::not_found(format!("task '{key}'")))
 }
 
 pub async fn get_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult<TaskDetail> {
     let task = fetch_task(pool, auth, key).await?;
-    let rows: Vec<(String, Option<String>, Option<String>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as(
-            r#"
+    let rows: Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        r#"
             SELECT e.event, a.name, e.detail, e.created_at
             FROM task_events e
             LEFT JOIN agents a ON a.id = e.agent_id
@@ -226,11 +231,11 @@ pub async fn get_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult<Tas
             WHERE t.team_id = $1 AND t.key = $2
             ORDER BY e.id
             "#,
-        )
-        .bind(auth.team_id)
-        .bind(key.trim())
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(auth.team_id)
+    .bind(key.trim())
+    .fetch_all(pool)
+    .await?;
 
     Ok(TaskDetail {
         task,
@@ -256,13 +261,15 @@ pub async fn list_tasks(
     limit: i64,
 ) -> BusResult<TaskList> {
     let limit = limit.clamp(1, MAX_LIMIT);
-    let status = status.map(|s| s.trim().to_lowercase()).filter(|s| s != "any");
-    if let Some(s) = &status {
-        if !["open", "claimed", "done", "cancelled"].contains(&s.as_str()) {
-            return Err(BusError::invalid(
-                "status must be one of: open, claimed, done, cancelled, any",
-            ));
-        }
+    let status = status
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s != "any");
+    if let Some(s) = &status
+        && !["open", "claimed", "done", "cancelled"].contains(&s.as_str())
+    {
+        return Err(BusError::invalid(
+            "status must be one of: open, claimed, done, cancelled, any",
+        ));
     }
 
     let rows: Vec<TaskRow> = sqlx::query_as(&format!(
@@ -365,15 +372,15 @@ pub async fn claim_task(
                 )
             } else {
                 match current.status.as_str() {
-                "claimed" => format!(
-                    "held by {} until {}",
-                    current.claimed_by.clone().unwrap_or_else(|| "?".into()),
-                    current
-                        .lease_expires_at
-                        .clone()
-                        .unwrap_or_else(|| "unknown".into())
-                ),
-                other => format!("task is {other}"),
+                    "claimed" => format!(
+                        "held by {} until {}",
+                        current.claimed_by.clone().unwrap_or_else(|| "?".into()),
+                        current
+                            .lease_expires_at
+                            .clone()
+                            .unwrap_or_else(|| "unknown".into())
+                    ),
+                    other => format!("task is {other}"),
                 }
             };
             Ok(ClaimResult {
@@ -432,7 +439,14 @@ pub async fn claim_next_task(
 
     match picked {
         Some((id, key)) => {
-            log_event(pool, id, auth.agent_id, "claimed", Some("via claim_next_task")).await?;
+            log_event(
+                pool,
+                id,
+                auth.agent_id,
+                "claimed",
+                Some("via claim_next_task"),
+            )
+            .await?;
             Ok(ClaimResult {
                 claimed: true,
                 task: Some(fetch_task(pool, auth, &key).await?),

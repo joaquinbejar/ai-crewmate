@@ -97,18 +97,22 @@ async fn describe(pool: &PgPool, event: &BusEvent) -> Option<WaitEvent> {
         }
         "task" => {
             let key = event.0.get("key").and_then(|v| v.as_str())?;
-            let status = event.0.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = event
+                .0
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let holder = match event.0.get("claimed_by").and_then(|v| v.as_str()) {
-                Some(uuid) => sqlx::query_scalar::<_, String>(
-                    "SELECT name FROM agents WHERE id = $1::uuid",
-                )
-                .bind(uuid)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten()
-                .map(|n| format!(" by {n}"))
-                .unwrap_or_default(),
+                Some(uuid) => {
+                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
+                        .bind(uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|n| format!(" by {n}"))
+                        .unwrap_or_default()
+                }
                 None => String::new(),
             };
             Some(WaitEvent {
@@ -118,14 +122,22 @@ async fn describe(pool: &PgPool, event: &BusEvent) -> Option<WaitEvent> {
         }
         "lock" => {
             let name = event.0.get("name").and_then(|v| v.as_str())?;
-            let what = event.0.get("event").and_then(|v| v.as_str()).unwrap_or("changed");
+            let what = event
+                .0
+                .get("event")
+                .and_then(|v| v.as_str())
+                .unwrap_or("changed");
             Some(WaitEvent {
                 kind: "lock".into(),
                 summary: format!("lock '{name}' {what}"),
             })
         }
         "note" => {
-            let scope = event.0.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            let scope = event
+                .0
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("global");
             let key = event.0.get("key").and_then(|v| v.as_str())?;
             Some(WaitEvent {
                 kind: "note".into(),
@@ -169,9 +181,9 @@ impl Bus {
             .timeout_seconds
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(5, MAX_TIMEOUT_SECS);
-        let kind_filter: Option<Vec<String>> = args.kinds.map(|ks| {
-            ks.into_iter().map(|k| k.trim().to_lowercase()).collect()
-        });
+        let kind_filter: Option<Vec<String>> = args
+            .kinds
+            .map(|ks| ks.into_iter().map(|k| k.trim().to_lowercase()).collect());
         let wants = |kind: &str| {
             kind_filter
                 .as_ref()
@@ -233,17 +245,14 @@ impl Bus {
                 events.push(described);
                 // Grace window: batch events that arrive together.
                 let grace = tokio::time::Instant::now() + Duration::from_millis(150);
-                while let Ok(Ok(more)) =
-                    tokio::time::timeout_at(grace, rx.recv()).await
-                {
+                while let Ok(Ok(more)) = tokio::time::timeout_at(grace, rx.recv()).await {
                     if more.visible_to(auth.team_id, auth.agent_id)
                         && wants(more.kind())
                         && !(more.kind() == "message"
                             && more.sender_agent_id() == Some(auth.agent_id))
+                        && let Some(d) = describe(&self.db, &more).await
                     {
-                        if let Some(d) = describe(&self.db, &more).await {
-                            events.push(d);
-                        }
+                        events.push(d);
                     }
                 }
             }

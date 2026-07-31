@@ -139,7 +139,9 @@ impl Bus {
             only_new: args.only_new,
             limit: args.limit,
         };
-        Ok(Json(messaging::read_messages(&self.db, &auth, input).await?))
+        Ok(Json(
+            messaging::read_messages(&self.db, &auth, input).await?,
+        ))
     }
 
     #[tool(

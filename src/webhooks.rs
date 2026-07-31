@@ -20,7 +20,10 @@ struct WebhookRow {
 
 /// Human-readable line for an event, resolving ids to names. Returns `None`
 /// for events that should not be forwarded (DMs, unknown kinds).
-async fn render_event(pool: &PgPool, event: &BusEvent) -> Option<(String, serde_json::Value, Option<String>)> {
+async fn render_event(
+    pool: &PgPool,
+    event: &BusEvent,
+) -> Option<(String, serde_json::Value, Option<String>)> {
     match event.kind() {
         "message" => {
             if event.is_direct_message() {
@@ -49,16 +52,20 @@ async fn render_event(pool: &PgPool, event: &BusEvent) -> Option<(String, serde_
         }
         "task" => {
             let key = event.0.get("key").and_then(|v| v.as_str())?;
-            let status = event.0.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = event
+                .0
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let holder = match event.0.get("claimed_by").and_then(|v| v.as_str()) {
-                Some(uuid) => sqlx::query_scalar::<_, String>(
-                    "SELECT name FROM agents WHERE id = $1::uuid",
-                )
-                .bind(uuid)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten(),
+                Some(uuid) => {
+                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
+                        .bind(uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                }
                 None => None,
             };
             let icon = match status {
@@ -79,16 +86,20 @@ async fn render_event(pool: &PgPool, event: &BusEvent) -> Option<(String, serde_
         }
         "lock" => {
             let name = event.0.get("name").and_then(|v| v.as_str())?;
-            let what = event.0.get("event").and_then(|v| v.as_str()).unwrap_or("changed");
+            let what = event
+                .0
+                .get("event")
+                .and_then(|v| v.as_str())
+                .unwrap_or("changed");
             let holder = match event.0.get("holder_agent_id").and_then(|v| v.as_str()) {
-                Some(uuid) => sqlx::query_scalar::<_, String>(
-                    "SELECT name FROM agents WHERE id = $1::uuid",
-                )
-                .bind(uuid)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten(),
+                Some(uuid) => {
+                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
+                        .bind(uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                }
                 None => None,
             };
             let who = holder.map(|h| format!(" by {h}")).unwrap_or_default();
@@ -97,17 +108,21 @@ async fn render_event(pool: &PgPool, event: &BusEvent) -> Option<(String, serde_
             Some((text, raw, None))
         }
         "note" => {
-            let scope = event.0.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            let scope = event
+                .0
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("global");
             let key = event.0.get("key").and_then(|v| v.as_str())?;
             let by = match event.0.get("updated_by").and_then(|v| v.as_str()) {
-                Some(uuid) => sqlx::query_scalar::<_, String>(
-                    "SELECT name FROM agents WHERE id = $1::uuid",
-                )
-                .bind(uuid)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten(),
+                Some(uuid) => {
+                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
+                        .bind(uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                }
                 None => None,
             };
             let who = by.map(|h| format!(" by {h}")).unwrap_or_default();
@@ -120,7 +135,9 @@ async fn render_event(pool: &PgPool, event: &BusEvent) -> Option<(String, serde_
 }
 
 async fn dispatch(pool: &PgPool, http: &reqwest::Client, event: &BusEvent) {
-    let Some(team_id) = event.team_id() else { return };
+    let Some(team_id) = event.team_id() else {
+        return;
+    };
     let kind = event.kind().to_owned();
 
     let hooks: Vec<WebhookRow> = match sqlx::query_as(
@@ -151,12 +168,11 @@ async fn dispatch(pool: &PgPool, http: &reqwest::Client, event: &BusEvent) {
 
     for hook in hooks {
         // Channel filter only constrains message events.
-        if kind == "message" {
-            if let (Some(filter), Some(chan)) = (&hook.channel_filter, &channel) {
-                if filter != chan {
-                    continue;
-                }
-            }
+        if kind == "message"
+            && let (Some(filter), Some(chan)) = (&hook.channel_filter, &channel)
+            && filter != chan
+        {
+            continue;
         }
         let payload = match hook.kind.as_str() {
             "slack" => serde_json::json!({ "text": text }),
@@ -252,7 +268,10 @@ pub async fn webhook_add(
     .fetch_one(pool)
     .await?;
 
-    println!("webhook {id} registered ({kind}, events: {})", events.join(","));
+    println!(
+        "webhook {id} registered ({kind}, events: {})",
+        events.join(",")
+    );
     Ok(())
 }
 

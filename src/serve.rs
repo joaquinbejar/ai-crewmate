@@ -19,8 +19,13 @@ pub struct ServeOptions {
     pub allowed_origins: Vec<String>,
 }
 
-async fn health(State(pool): State<PgPool>) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
-    match sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&pool).await {
+async fn health(
+    State(pool): State<PgPool>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    match sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&pool)
+        .await
+    {
         Ok(_) => (
             axum::http::StatusCode::OK,
             axum::Json(serde_json::json!({ "status": "ok", "database": "up" })),
@@ -44,7 +49,11 @@ pub fn build_router(pool: PgPool, opts: &ServeOptions, ct: CancellationToken) ->
         hub.clone(),
         ct.clone(),
     ));
-    tokio::spawn(webhooks::run_dispatcher(pool.clone(), hub.clone(), ct.clone()));
+    tokio::spawn(webhooks::run_dispatcher(
+        pool.clone(),
+        hub.clone(),
+        ct.clone(),
+    ));
 
     let mut config = StreamableHttpServerConfig::default()
         .with_json_response(true)
@@ -104,7 +113,9 @@ pub async fn run(pool: PgPool, opts: ServeOptions) -> anyhow::Result<()> {
     let shutdown = {
         let ct = ct.clone();
         async move {
-            let ctrl_c = async { tokio::signal::ctrl_c().await.ok(); };
+            let ctrl_c = async {
+                tokio::signal::ctrl_c().await.ok();
+            };
             #[cfg(unix)]
             let term = async {
                 if let Ok(mut s) =

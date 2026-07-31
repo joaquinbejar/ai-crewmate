@@ -7,6 +7,10 @@
 //! - [`serve`] wires the transport, authentication and axum together,
 //! - [`admin`] is the operator CLI (teams, agents, tokens).
 
+// Row tuples for `sqlx::query_as` are spelled out next to the SELECT that
+// produces them; naming each one would only add indirection.
+#![allow(clippy::type_complexity)]
+
 pub mod admin;
 pub mod auth;
 pub mod client;

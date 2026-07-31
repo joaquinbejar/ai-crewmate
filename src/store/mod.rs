@@ -8,7 +8,7 @@ pub mod tasks;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{auth::AuthCtx, error::BusResult, error::BusError, model::WhoAmI};
+use crate::{auth::AuthCtx, error::BusError, error::BusResult, model::WhoAmI};
 
 /// Channel names are normalised so `#dev`, `dev` and `DEV` all address the same
 /// channel. Keeps the model from creating near-duplicate channels.
@@ -58,12 +58,11 @@ pub async fn whoami(pool: &PgPool, auth: &AuthCtx) -> BusResult<WhoAmI> {
     .fetch_one(pool)
     .await?;
 
-    let (claimed,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM tasks WHERE claimed_by = $1 AND status = 'claimed'",
-    )
-    .bind(auth.agent_id)
-    .fetch_one(pool)
-    .await?;
+    let (claimed,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM tasks WHERE claimed_by = $1 AND status = 'claimed'")
+            .bind(auth.agent_id)
+            .fetch_one(pool)
+            .await?;
 
     Ok(WhoAmI {
         agent: auth.agent_name.clone(),

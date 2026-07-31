@@ -89,14 +89,16 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
 
     let tasks_moved: Vec<DigestTask> = task_rows
         .into_iter()
-        .map(|(key, title, status, claimed_by, result, updated_at)| DigestTask {
-            key,
-            title,
-            status,
-            claimed_by,
-            result,
-            updated_at: ts(updated_at),
-        })
+        .map(
+            |(key, title, status, claimed_by, result, updated_at)| DigestTask {
+                key,
+                title,
+                status,
+                claimed_by,
+                result,
+                updated_at: ts(updated_at),
+            },
+        )
         .collect();
 
     let (open_tasks, claimed_tasks): (i64, i64) = sqlx::query_as(
@@ -111,9 +113,13 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
     .await?;
 
     // Notes touched in the window.
-    let note_rows: Vec<(String, String, Option<String>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as(
-            r#"
+    let note_rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        r#"
             SELECT n.scope, n.key, a.name, n.updated_at
             FROM notes n
             LEFT JOIN agents a ON a.id = n.updated_by
@@ -121,11 +127,11 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
             ORDER BY n.updated_at DESC
             LIMIT 50
             "#,
-        )
-        .bind(auth.team_id)
-        .bind(hours as i32)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(auth.team_id)
+    .bind(hours as i32)
+    .fetch_all(pool)
+    .await?;
 
     let notes_updated: Vec<DigestNote> = note_rows
         .into_iter()
@@ -138,53 +144,66 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
         .collect();
 
     // Who was around.
-    let agent_rows: Vec<(String, Option<String>, Option<chrono::DateTime<chrono::Utc>>, bool)> =
-        sqlx::query_as(
-            r#"
+    let agent_rows: Vec<(
+        String,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        bool,
+    )> = sqlx::query_as(
+        r#"
             SELECT a.name, p.activity, p.updated_at, COALESCE(p.expires_at > now(), false)
             FROM agents a
             LEFT JOIN agent_presence p ON p.agent_id = a.id
             WHERE a.team_id = $1 AND a.disabled_at IS NULL
             ORDER BY p.updated_at DESC NULLS LAST
             "#,
-        )
-        .bind(auth.team_id)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(auth.team_id)
+    .fetch_all(pool)
+    .await?;
 
     let agents_seen = agent_rows
         .into_iter()
-        .map(|(name, activity, last_seen, online)| crate::model::DigestAgent {
-            name,
-            activity,
-            last_seen: ts_opt(last_seen),
-            online,
-        })
+        .map(
+            |(name, activity, last_seen, online)| crate::model::DigestAgent {
+                name,
+                activity,
+                last_seen: ts_opt(last_seen),
+                online,
+            },
+        )
         .collect();
 
     // Active locks right now.
-    let lock_rows: Vec<(String, String, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as(
-            r#"
+    let lock_rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        r#"
             SELECT l.name, a.name, l.purpose, l.acquired_at, l.expires_at
             FROM locks l JOIN agents a ON a.id = l.holder_agent_id
             WHERE l.team_id = $1 AND l.expires_at > now()
             ORDER BY l.name
             "#,
-        )
-        .bind(auth.team_id)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(auth.team_id)
+    .fetch_all(pool)
+    .await?;
 
     let active_locks = lock_rows
         .into_iter()
-        .map(|(name, holder, purpose, acquired_at, expires_at)| LockInfo {
-            name,
-            holder,
-            purpose,
-            acquired_at: ts(acquired_at),
-            expires_at: ts(expires_at),
-        })
+        .map(
+            |(name, holder, purpose, acquired_at, expires_at)| LockInfo {
+                name,
+                holder,
+                purpose,
+                acquired_at: ts(acquired_at),
+                expires_at: ts(expires_at),
+            },
+        )
         .collect();
 
     Ok(DigestResult {

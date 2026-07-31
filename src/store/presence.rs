@@ -31,7 +31,10 @@ pub async fn heartbeat(
             "status must be one of: active, idle, busy, blocked",
         ));
     }
-    let ttl = input.ttl_seconds.unwrap_or(DEFAULT_TTL_SECS).clamp(30, MAX_TTL_SECS);
+    let ttl = input
+        .ttl_seconds
+        .unwrap_or(DEFAULT_TTL_SECS)
+        .clamp(30, MAX_TTL_SECS);
 
     sqlx::query(
         r#"
@@ -63,11 +66,7 @@ pub async fn heartbeat(
         .ok_or_else(|| BusError::not_found("own presence row"))
 }
 
-pub async fn list_agents(
-    pool: &PgPool,
-    auth: &AuthCtx,
-    online_only: bool,
-) -> BusResult<AgentList> {
+pub async fn list_agents(pool: &PgPool, auth: &AuthCtx, online_only: bool) -> BusResult<AgentList> {
     let rows: Vec<(
         String,
         Option<String>,
