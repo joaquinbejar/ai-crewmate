@@ -1,5 +1,7 @@
 # ai-crewmate
 
+[![CI](https://github.com/joaquinbejar/ai-crewmate/actions/workflows/ci.yml/badge.svg)](https://github.com/joaquinbejar/ai-crewmate/actions/workflows/ci.yml)
+
 Servidor MCP en Rust que hace de **bus de coordinación entre los Claude Code de
 un equipo**, con todo el estado en Postgres. Cada instancia de Claude Code (la
 tuya, la de cada compañero) se conecta con su propio token y puede:
