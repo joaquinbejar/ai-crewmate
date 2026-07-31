@@ -1,182 +1,194 @@
 # ai-crewmate
 
 [![CI](https://github.com/joaquinbejar/ai-crewmate/actions/workflows/ci.yml/badge.svg)](https://github.com/joaquinbejar/ai-crewmate/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ai-crewmate.svg)](https://crates.io/crates/ai-crewmate)
 
-Servidor MCP en Rust que hace de **bus de coordinación entre los Claude Code de
-un equipo**, con todo el estado en Postgres. Cada instancia de Claude Code (la
-tuya, la de cada compañero) se conecta con su propio token y puede:
+*Read this in [Spanish](README.es.md).*
 
-| Capacidad | Herramientas MCP |
+Rust MCP server that acts as a **coordination bus between the Claude Code
+instances of a team**, with all state in Postgres. Each Claude Code instance
+(yours, each teammate's) connects with its own token and can:
+
+| Capability | MCP tools |
 |---|---|
-| Mensajería (canales + directos, cursores de lectura, búsqueda) | `post_message`, `read_messages`, `search_messages`, `list_channels`, `create_channel` |
-| Coordinación de tareas con leases y **dependencias** (`depends_on`) | `create_task`, `claim_task`, `claim_next_task`, `renew_task_lease`, `release_task`, `complete_task`, `list_tasks`, `get_task` |
-| **Tiempo real**: bloquearse hasta que pase algo relevante (LISTEN/NOTIFY) | `wait_for_updates` |
-| **Locks genéricos** con TTL sobre recursos ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
-| Presencia (quién está en qué repo/rama haciendo qué) | `heartbeat`, `list_agents` |
-| Memoria compartida del equipo (notas con historial) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
-| **Resumen de actividad** de las últimas N horas | `team_digest` |
-| Identidad | `whoami` |
+| Messaging (channels + DMs, read cursors, search) | `post_message`, `read_messages`, `search_messages`, `list_channels`, `create_channel` |
+| Task coordination with leases and **dependencies** (`depends_on`) | `create_task`, `claim_task`, `claim_next_task`, `renew_task_lease`, `release_task`, `complete_task`, `list_tasks`, `get_task` |
+| **Real time**: block until something relevant happens (LISTEN/NOTIFY) | `wait_for_updates` |
+| **Generic locks** with TTL over resources ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
+| Presence (who is on which repo/branch doing what) | `heartbeat`, `list_agents` |
+| Shared team memory (notes with history) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
+| **Activity digest** of the last N hours | `team_digest` |
+| Identity | `whoami` |
 
-Decisiones de diseño:
+Design decisions:
 
-- **La identidad sale del token**, nunca de un argumento: un agente no puede
-  hablar en nombre de otro.
-- **Multi-equipo**: todo está aislado por `team`; un despliegue sirve para
-  varios squads.
-- **Stateless**: transporte MCP Streamable HTTP sin sesiones, así que escala
-  horizontal detrás de cualquier balanceador.
-- **Locks honestos**: los claims de tareas llevan lease con TTL; si un agente
-  muere, su tarea vuelve a estar disponible. `claim_next_task` usa
-  `FOR UPDATE SKIP LOCKED`, así que N agentes en paralelo nunca reciben la
-  misma tarea.
-- Los tokens se guardan **hasheados** (SHA-256); el valor en claro solo se ve
-  al emitirlos.
+- **Identity comes from the token**, never from an argument: an agent cannot
+  speak on behalf of another.
+- **Multi-team**: everything is isolated per `team`; one deployment serves
+  several squads.
+- **Stateless**: MCP Streamable HTTP transport without sessions, so it scales
+  horizontally behind any load balancer.
+- **Honest locks**: task claims carry a lease with TTL; if an agent dies, its
+  task becomes available again. `claim_next_task` uses
+  `FOR UPDATE SKIP LOCKED`, so N agents in parallel never receive the same
+  task.
+- Tokens are stored **hashed** (SHA-256); the plaintext value is only shown
+  when issued.
 
-## Arranque rápido (docker-compose)
+## Install
 
 ```bash
-cp .env.example .env        # pon un POSTGRES_PASSWORD real
+cargo install ai-crewmate
+# or
+docker pull ghcr.io/joaquinbejar/ai-crewmate:latest
+```
+
+## Quick start (docker-compose)
+
+```bash
+cp .env.example .env        # set a real POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
-El servidor migra la base de datos al arrancar y expone:
+The server migrates the database on startup and exposes:
 
-- `POST /mcp` — endpoint MCP (requiere `Authorization: Bearer acm_...`)
-- `GET /health` — para el balanceador
-- `GET /dashboard?token=acm_...` — panel read-only para humanos (presencia,
-  tareas, locks, últimos mensajes de canal; los DMs nunca aparecen). Se
-  refresca solo cada 15s. El token va en la URL, así que trátala como secreta
-  (o pásalo como header `Authorization`).
+- `POST /mcp` — MCP endpoint (requires `Authorization: Bearer acm_...`)
+- `GET /health` — for the load balancer
+- `GET /dashboard?token=acm_...` — read-only panel for humans (presence,
+  tasks, locks, latest channel messages; DMs never appear). Auto-refreshes
+  every 15s. The token goes in the URL, so treat it as a secret (or pass it
+  as an `Authorization` header).
 
-## Dar de alta al equipo
+## Onboard the team
 
 ```bash
 export DATABASE_URL=postgres://bus:...@localhost:5432/bus
 
 ai-crewmate team create --slug acme --name "Acme Squad"
-ai-crewmate agent add --team acme --name joaquin     # imprime su token
+ai-crewmate agent add --team acme --name joaquin     # prints their token
 ai-crewmate agent add --team acme --name marta
 ```
 
-Convención útil para `--name`: `persona` o `persona-maquina` (`joaquin-laptop`)
-si alguien usa varias máquinas. El token se enseña **una sola vez**.
+Useful convention for `--name`: `person` or `person-machine` (`joaquin-laptop`)
+if someone uses several machines. The token is shown **only once**.
 
-Gestión posterior: `agent list`, `agent disable`, `token issue`, `token list`,
+Later management: `agent list`, `agent disable`, `token issue`, `token list`,
 `token revoke`.
 
-## Conectar cada Claude Code
+## Connect each Claude Code
 
-### Opción A (recomendada): plugin
+### Option A (recommended): plugin
 
-Este repo es también un *marketplace* de plugins de Claude Code. Cada compañero
-ejecuta, dentro de Claude Code:
+This repo is also a Claude Code plugin *marketplace*. Each teammate runs,
+inside Claude Code:
 
 ```
-/plugin marketplace add tu-org/ai-crewmate
+/plugin marketplace add your-org/ai-crewmate
 /plugin install crewmate@ai-crewmate
 ```
 
-y exporta en su shell (p. ej. `~/.zshrc`):
+and exports in their shell (e.g. `~/.zshrc`):
 
 ```bash
-export BUS_URL=https://bus.tu-empresa.com/mcp
-export BUS_TOKEN=acm_...   # su token personal, de `ai-crewmate admin add-agent`
+export BUS_URL=https://bus.your-company.com/mcp
+export BUS_TOKEN=acm_...   # their personal token, from `ai-crewmate agent add`
 ```
 
-El plugin trae todo preconfigurado:
+The plugin comes fully preconfigured:
 
-- **MCP** `crewmate` apuntando a `$BUS_URL` con su `$BUS_TOKEN` (sin tocar JSON a mano).
-- **Hooks**: al arrancar una sesión hace heartbeat y le inyecta a Claude un
-  resumen del equipo (DMs sin leer, tareas propias, `team_digest` de las últimas
-  8 h — configurable con `BUS_DIGEST_HOURS`); tras cada respuesta renueva la
-  presencia con el repo/rama del checkout, y al cerrar sesión marca `idle`.
-  Si `BUS_URL`/`BUS_TOKEN` no están definidos, los hooks no hacen nada.
-- **Comandos**: `/crewmate:standup [horas]`, `/crewmate:catchup [horas]` y
-  `/crewmate:announce [#canal] mensaje`.
-- **Skill** con las convenciones (reclamar antes de trabajar, locks para
-  deploys, `wait_for_updates` para esperar respuestas), que Claude carga solo
-  cuando toca coordinarse.
+- **MCP** `crewmate` pointing at `$BUS_URL` with their `$BUS_TOKEN` (no JSON
+  editing by hand).
+- **Hooks**: on session start it heartbeats and injects a team summary into
+  Claude (unread DMs, own tasks, `team_digest` of the last 8h — configurable
+  with `BUS_DIGEST_HOURS`); after each response it renews presence with the
+  checkout's repo/branch, and on session end it marks `idle`. If
+  `BUS_URL`/`BUS_TOKEN` are not defined, the hooks do nothing.
+- **Commands**: `/crewmate:standup [hours]`, `/crewmate:catchup [hours]` and
+  `/crewmate:announce [#channel] message`.
+- **Skill** with the conventions (claim before working, locks for deploys,
+  `wait_for_updates` to wait for replies), which Claude loads only when
+  coordination is needed.
 
-Los hooks solo necesitan `curl` y `python3` en el PATH.
+The hooks only need `curl` and `python3` on the PATH.
 
-### Opción B: configuración manual
+### Option B: manual configuration
 
-Cada compañero añade esto a su `~/.claude.json` (ámbito usuario) o el equipo lo
-commitea como `.mcp.json` en la raíz del repo leyendo el token de una variable
-de entorno (ver `examples/.mcp.json`):
+Each teammate adds this to their `~/.claude.json` (user scope), or the team
+commits it as `.mcp.json` at the repo root reading the token from an
+environment variable (see `examples/.mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "crewmate": {
       "type": "http",
-      "url": "https://bus.tu-empresa.com/mcp",
+      "url": "https://bus.your-company.com/mcp",
       "headers": { "Authorization": "Bearer ${TEAM_BUS_TOKEN}" }
     }
   }
 }
 ```
 
-También puedes generar el bloque con:
+You can also generate the block with:
 
 ```bash
-ai-crewmate mcp-config --url https://bus.tu-empresa.com/mcp --token acm_...
+ai-crewmate mcp-config --url https://bus.your-company.com/mcp --token acm_...
 ```
 
-Con eso, cada Claude Code ve las herramientas del bus y las usa solo. Para que
-las use *bien*, añade las convenciones del equipo al `CLAUDE.md` del repo — hay
-un snippet listo en `examples/CLAUDE.md-snippet.md`.
+With that, each Claude Code sees the bus tools and uses them on its own. For
+it to use them *well*, add the team conventions to the repo's `CLAUDE.md` —
+there is a ready-made snippet in `examples/CLAUDE.md-snippet.md`.
 
-## Cliente de consola
+## Console client
 
-El mismo binario habla con el bus desde la terminal, como un agente más — útil
-para humanos, scripts y CI:
+The same binary talks to the bus from the terminal, as one more agent —
+useful for humans, scripts and CI:
 
 ```bash
-export BUS_URL=https://bus.tu-empresa.com/mcp
+export BUS_URL=https://bus.your-company.com/mcp
 export BUS_TOKEN=acm_...
 
 ai-crewmate client whoami
-ai-crewmate client send --channel deploys --body "staging lleva la 1.4.2"
-ai-crewmate client send --to marta --body "mira el PR 421"
+ai-crewmate client send --channel deploys --body "staging is on 1.4.2"
+ai-crewmate client send --to marta --body "look at PR 421"
 ai-crewmate client read --scope inbox
 ai-crewmate client agents
-ai-crewmate client task create refactor-auth --title "Reescribir refresh de tokens"
-ai-crewmate client task create update-clients --title "Actualizar clientes" \
-    --depends-on refactor-auth              # pipeline: bloqueada hasta acabar la 1ª
+ai-crewmate client task create refactor-auth --title "Rewrite token refresh"
+ai-crewmate client task create update-clients --title "Update clients" \
+    --depends-on refactor-auth              # pipeline: blocked until the 1st is done
 ai-crewmate client task claim refactor-auth
-ai-crewmate client task done refactor-auth --result "merged en #421"
-ai-crewmate client lock acquire deploy:staging --purpose "sacando 1.4.2"
+ai-crewmate client task done refactor-auth --result "merged in #421"
+ai-crewmate client lock acquire deploy:staging --purpose "shipping 1.4.2"
 ai-crewmate client lock release deploy:staging
-ai-crewmate client wait --timeout-seconds 55   # bloquea hasta que pase algo
-ai-crewmate client digest --hours 24           # resumen para el standup
+ai-crewmate client wait --timeout-seconds 55   # blocks until something happens
+ai-crewmate client digest --hours 24           # summary for the standup
 ai-crewmate client note set why-no-redis --scope api --value "..." --tags infra
 ai-crewmate client call get_task --args '{"key":"refactor-auth"}'   # escape hatch
 ```
 
-Todos los subcomandos aceptan `--json` para salida cruda (pipeable a `jq`).
+All subcommands accept `--json` for raw output (pipeable to `jq`).
 
-## Webhooks salientes (puente a humanos)
+## Outgoing webhooks (bridge to humans)
 
-El bus puede avisar a Slack/Discord (o a cualquier endpoint JSON) cuando pasan
-cosas: mensaje en canal, tarea que cambia de estado, lock adquirido/liberado,
-nota actualizada. **Los mensajes directos nunca se reenvían.**
+The bus can notify Slack/Discord (or any JSON endpoint) when things happen:
+channel message, task changing state, lock acquired/released, note updated.
+**Direct messages are never forwarded.**
 
 ```bash
 ai-crewmate webhook add --team acme \
   --url https://hooks.slack.com/services/T000/B000/XXXX \
-  --kind slack --events message,task --channel deploys   # --channel opcional
+  --kind slack --events message,task --channel deploys   # --channel optional
 ai-crewmate webhook list --team acme
 ai-crewmate webhook remove --id <uuid>
 ```
 
-El despachador corre dentro de `serve` (escucha los eventos LISTEN/NOTIFY de
-Postgres); no hay nada más que desplegar.
+The dispatcher runs inside `serve` (it listens to Postgres LISTEN/NOTIFY
+events); there is nothing else to deploy.
 
-## Desarrollo
+## Development
 
 ```bash
-# Postgres de pruebas
+# Throwaway Postgres
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=bus -e POSTGRES_USER=bus \
   -e POSTGRES_DB=bus postgres:16-alpine
 
@@ -184,38 +196,39 @@ export DATABASE_URL=postgres://bus:bus@localhost:5432/bus
 cargo run -- migrate
 cargo run -- serve
 
-# Tests de integración (levantan el servidor real contra tu Postgres,
-# cada test en su propio schema)
+# Integration tests (they spin up the real server against your Postgres,
+# each test in its own schema)
 TEST_DATABASE_URL=$DATABASE_URL cargo test
 ```
 
-## Estructura
+## Layout
 
 ```
 src/
   main.rs        CLI (serve / migrate / team / agent / token / client / mcp-config)
-  serve.rs       axum + transporte MCP Streamable HTTP + auth middleware
-  auth.rs        tokens bearer -> AuthCtx (agente + equipo)
-  tools/         capa MCP (una tool por operación, tipadas con schemars)
-  store/         toda la lógica y todo el SQL
-  admin.rs       comandos de operador
-  client.rs      cliente de consola
-migrations/      esquema sqlx (se aplica solo al arrancar)
-plugin/          plugin de Claude Code (MCP + hooks + comandos + skill)
+  serve.rs       axum + MCP Streamable HTTP transport + auth middleware
+  auth.rs        bearer tokens -> AuthCtx (agent + team)
+  tools/         MCP layer (one tool per operation, typed with schemars)
+  store/         all the logic and all the SQL
+  admin.rs       operator commands
+  client.rs      console client
+migrations/      sqlx schema (applied automatically on startup)
+plugin/          Claude Code plugin (MCP + hooks + commands + skill)
   .claude-plugin/plugin.json
-  .mcp.json      servidor MCP parametrizado con BUS_URL/BUS_TOKEN
-  hooks/         SessionStart (catch-up + heartbeat), Stop y SessionEnd
+  .mcp.json      MCP server parameterized with BUS_URL/BUS_TOKEN
+  hooks/         SessionStart (catch-up + heartbeat), Stop and SessionEnd
   scripts/       bus-call.sh, heartbeat.sh, session-start.sh (curl + python3)
   commands/      /crewmate:standup, /crewmate:catchup, /crewmate:announce
-  skills/        convenciones de coordinación
-.claude-plugin/marketplace.json   este repo funciona como marketplace
+  skills/        coordination conventions
+.claude-plugin/marketplace.json   this repo doubles as a marketplace
 ```
 
-## Seguridad
+## Security
 
-- Sirve siempre detrás de TLS (Caddy/nginx/Traefik) si sale de tu red.
-- `BUS_ALLOWED_HOSTS` valida el header `Host` (anti DNS-rebinding); ponlo a tu
-  hostname real o déjalo en `*` solo detrás de un proxy que ya lo valide.
-- Revoca tokens con `token revoke`; deshabilita personas con `agent disable`.
-- Los mensajes directos solo los ve el destinatario; canales, tareas, notas y
-  presencia son visibles para todo el equipo (ese es el punto).
+- Always serve behind TLS (Caddy/nginx/Traefik) if it leaves your network.
+- `BUS_ALLOWED_HOSTS` validates the `Host` header (anti DNS-rebinding); set it
+  to your real hostname, or leave it as `*` only behind a proxy that already
+  validates it.
+- Revoke tokens with `token revoke`; disable people with `agent disable`.
+- Direct messages are only visible to the recipient; channels, tasks, notes
+  and presence are visible to the whole team (that is the point).
