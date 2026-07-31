@@ -1,0 +1,145 @@
+pub mod events;
+pub mod locks;
+pub mod messaging;
+pub mod notes;
+pub mod presence;
+pub mod tasks;
+
+use rmcp::{
+    ErrorData, Json, ServerHandler,
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    model::{ServerCapabilities, ServerInfo},
+    service::RequestContext,
+    tool, tool_handler, tool_router,
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use sqlx::PgPool;
+
+use crate::{
+    auth::AuthCtx,
+    events::EventHub,
+    model::{DigestResult, WhoAmI},
+    store,
+};
+
+pub const INSTRUCTIONS: &str = r#"
+Shared coordination bus for a team of Claude Code agents. Every agent in the
+team is connected to the same bus, so anything you write here is visible to your
+teammates' agents, and anything they write is visible to you.
+
+Identity is taken from your bearer token; you never pass your own name as an
+argument. Call `whoami` once at the start of a session to learn your handle and
+see whether anything is waiting for you.
+
+Four capabilities:
+
+- Messaging. `post_message` to a `channel` (broadcast to the whole team) or to a
+  single agent via `to` (direct message). `read_messages` returns only what you
+  have not seen yet by default, and advances your read cursor.
+- Task coordination. Before starting shared work, `claim_task` so two agents do
+  not do the same job twice. Claims hold a lease that expires, so call
+  `renew_task_lease` on long jobs and `complete_task` or `release_task` when you
+  stop. An expired lease can be taken over by anyone. Tasks can depend on other
+  tasks (`depends_on` at creation); blocked tasks cannot be claimed until their
+  dependencies are done, and `claim_next_task` skips them.
+- Locks. `acquire_lock` before touching a contended resource ("deploy:staging",
+  "schema:users"); `release_lock` when finished. Lighter than a task, expires on
+  its own.
+- Presence. `heartbeat` publishes what you are working on (repo, branch, a short
+  activity string). `list_agents` shows who else is active right now.
+- Shared notes. `set_note` / `get_note` / `search_notes` are the team's durable
+  memory: decisions, gotchas, deploy state. Prefer a note over repeating the
+  same explanation in chat.
+- Waiting. When you are blocked on teammates, call `wait_for_updates` instead of
+  polling: it blocks until a relevant message/task/lock/note event arrives or
+  the timeout passes. `team_digest` summarises the last hours of team activity —
+  useful at session start to catch up.
+
+Conventions worth following: keep messages short and factual, scope notes by
+repository name, and use task keys that a human would recognise.
+"#;
+
+/// The MCP server. Cheap to clone: `PgPool` and `EventHub` are `Arc`s
+/// internally, and the tool router is rebuilt per session by the transport's
+/// service factory.
+#[derive(Clone)]
+pub struct Bus {
+    pub db: PgPool,
+    pub hub: EventHub,
+    pub tool_router: ToolRouter<Self>,
+}
+
+impl Bus {
+    pub fn new(db: PgPool, hub: EventHub) -> Self {
+        let tool_router = Self::core_router()
+            + Self::messaging_router()
+            + Self::tasks_router()
+            + Self::presence_router()
+            + Self::notes_router()
+            + Self::locks_router()
+            + Self::events_router();
+        Self { db, hub, tool_router }
+    }
+}
+
+/// Pull the authenticated identity out of the HTTP request that carried this
+/// tool call. The bearer middleware put it there; if it is missing, something
+/// is routing around authentication and we refuse rather than guess.
+pub fn auth_of(ctx: &RequestContext<rmcp::RoleServer>) -> Result<AuthCtx, ErrorData> {
+    ctx.extensions
+        .get::<http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<AuthCtx>())
+        .cloned()
+        .ok_or_else(|| {
+            ErrorData::invalid_request(
+                "no authentication context on this request; the server is misconfigured",
+                None,
+            )
+        })
+}
+
+#[tool_router(router = core_router, vis = "pub")]
+impl Bus {
+    #[tool(
+        description = "Identify yourself on the bus: your agent handle, your team, \
+                       how many unread direct messages you have and how many tasks \
+                       you currently hold. Call this first in a session."
+    )]
+    async fn whoami(&self, ctx: RequestContext<rmcp::RoleServer>) -> Result<Json<WhoAmI>, ErrorData> {
+        let auth = auth_of(&ctx)?;
+        Ok(Json(store::whoami(&self.db, &auth).await?))
+    }
+
+    #[tool(
+        description = "Summarise the team's last hours: channel activity, tasks that moved, \
+                       notes touched, who was around, active locks. Call it at session start \
+                       to catch up, or to prepare a standup. Direct messages are excluded."
+    )]
+    async fn team_digest(
+        &self,
+        ctx: RequestContext<rmcp::RoleServer>,
+        Parameters(args): Parameters<DigestArgs>,
+    ) -> Result<Json<DigestResult>, ErrorData> {
+        let auth = auth_of(&ctx)?;
+        Ok(Json(
+            store::digest::team_digest(&self.db, &auth, args.hours.unwrap_or(24)).await?,
+        ))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DigestArgs {
+    /// Window to summarise, in hours (1-336). Defaults to 24.
+    #[serde(default)]
+    pub hours: Option<i64>,
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for Bus {
+    fn get_info(&self) -> ServerInfo {
+        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        info.instructions = Some(INSTRUCTIONS.trim().to_string());
+        info
+    }
+}

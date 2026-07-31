@@ -1,0 +1,173 @@
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::{
+    auth::AuthCtx,
+    error::{BusError, BusResult},
+    model::{Ack, LockInfo, LockList, LockResult, ts},
+};
+
+const DEFAULT_TTL_SECS: i64 = 300;
+const MAX_TTL_SECS: i64 = 86_400;
+
+fn normalize_name(name: &str) -> BusResult<String> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return Err(BusError::invalid("lock name cannot be empty"));
+    }
+    if name.len() > 128 {
+        return Err(BusError::invalid("lock name is limited to 128 characters"));
+    }
+    Ok(name)
+}
+
+#[derive(sqlx::FromRow)]
+struct LockRow {
+    name: String,
+    holder: String,
+    purpose: Option<String>,
+    acquired_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<LockRow> for LockInfo {
+    fn from(r: LockRow) -> Self {
+        LockInfo {
+            name: r.name,
+            holder: r.holder,
+            purpose: r.purpose,
+            acquired_at: ts(r.acquired_at),
+            expires_at: ts(r.expires_at),
+        }
+    }
+}
+
+const LOCK_SELECT: &str = r#"
+    SELECT l.name, a.name AS holder, l.purpose, l.acquired_at, l.expires_at
+    FROM locks l
+    JOIN agents a ON a.id = l.holder_agent_id
+"#;
+
+/// Acquire (or, for the current holder, extend) an advisory lock. Expired
+/// locks are taken over silently — the previous holder is presumed dead.
+pub async fn acquire_lock(
+    pool: &PgPool,
+    auth: &AuthCtx,
+    name: &str,
+    ttl_seconds: Option<i64>,
+    purpose: Option<String>,
+) -> BusResult<LockResult> {
+    let name = normalize_name(name)?;
+    let ttl = ttl_seconds.unwrap_or(DEFAULT_TTL_SECS).clamp(5, MAX_TTL_SECS);
+
+    let acquired: Option<(Uuid,)> = sqlx::query_as(
+        r#"
+        INSERT INTO locks (team_id, name, holder_agent_id, purpose, acquired_at, expires_at)
+        VALUES ($1, $2, $3, $4, now(), now() + make_interval(secs => $5))
+        ON CONFLICT (team_id, name) DO UPDATE SET
+            holder_agent_id = EXCLUDED.holder_agent_id,
+            purpose = COALESCE(EXCLUDED.purpose, locks.purpose),
+            acquired_at = CASE
+                WHEN locks.holder_agent_id = EXCLUDED.holder_agent_id THEN locks.acquired_at
+                ELSE EXCLUDED.acquired_at
+            END,
+            expires_at = EXCLUDED.expires_at
+        WHERE locks.expires_at < now() OR locks.holder_agent_id = EXCLUDED.holder_agent_id
+        RETURNING holder_agent_id
+        "#,
+    )
+    .bind(auth.team_id)
+    .bind(&name)
+    .bind(auth.agent_id)
+    .bind(purpose.as_deref())
+    .bind(ttl as f64)
+    .fetch_optional(pool)
+    .await?;
+
+    let current: Option<LockRow> = sqlx::query_as(&format!(
+        "{LOCK_SELECT} WHERE l.team_id = $1 AND l.name = $2"
+    ))
+    .bind(auth.team_id)
+    .bind(&name)
+    .fetch_optional(pool)
+    .await?;
+
+    match acquired {
+        Some(_) => Ok(LockResult {
+            acquired: true,
+            lock: current.map(Into::into),
+            reason: None,
+        }),
+        None => {
+            let holder = current
+                .as_ref()
+                .map(|l| l.holder.clone())
+                .unwrap_or_else(|| "?".into());
+            let until = current
+                .as_ref()
+                .map(|l| ts(l.expires_at))
+                .unwrap_or_else(|| "unknown".into());
+            Ok(LockResult {
+                acquired: false,
+                lock: current.map(Into::into),
+                reason: Some(format!("held by {holder} until {until}")),
+            })
+        }
+    }
+}
+
+pub async fn release_lock(pool: &PgPool, auth: &AuthCtx, name: &str) -> BusResult<Ack> {
+    let name = normalize_name(name)?;
+
+    let released = sqlx::query(
+        "DELETE FROM locks WHERE team_id = $1 AND name = $2 AND holder_agent_id = $3",
+    )
+    .bind(auth.team_id)
+    .bind(&name)
+    .bind(auth.agent_id)
+    .execute(pool)
+    .await?;
+
+    if released.rows_affected() > 0 {
+        return Ok(Ack {
+            ok: true,
+            detail: format!("released lock '{name}'"),
+        });
+    }
+
+    // Not ours (or gone): explain rather than silently "ok".
+    let current: Option<(String,)> = sqlx::query_as(
+        r#"
+        SELECT a.name FROM locks l
+        JOIN agents a ON a.id = l.holder_agent_id
+        WHERE l.team_id = $1 AND l.name = $2 AND l.expires_at > now()
+        "#,
+    )
+    .bind(auth.team_id)
+    .bind(&name)
+    .fetch_optional(pool)
+    .await?;
+
+    match current {
+        Some((holder,)) => Err(BusError::conflict(format!(
+            "lock '{name}' is held by {holder}, not by you"
+        ))),
+        None => Ok(Ack {
+            ok: false,
+            detail: format!("lock '{name}' was not held"),
+        }),
+    }
+}
+
+pub async fn list_locks(pool: &PgPool, auth: &AuthCtx) -> BusResult<LockList> {
+    let rows: Vec<LockRow> = sqlx::query_as(&format!(
+        "{LOCK_SELECT} WHERE l.team_id = $1 AND l.expires_at > now() ORDER BY l.name"
+    ))
+    .bind(auth.team_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(LockList {
+        locks: rows.into_iter().map(Into::into).collect(),
+    })
+}

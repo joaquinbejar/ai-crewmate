@@ -1,0 +1,275 @@
+use anyhow::Context;
+use ai_crewmate::{MIGRATOR, admin, client, serve, webhooks};
+use clap::{Args, Parser, Subcommand};
+use sqlx::postgres::PgPoolOptions;
+use uuid::Uuid;
+
+#[derive(Parser)]
+#[command(
+    name = "ai-crewmate",
+    version,
+    about = "MCP coordination bus for a team of Claude Code agents, backed by Postgres"
+)]
+struct Cli {
+    /// Postgres connection string.
+    #[arg(long, env = "DATABASE_URL", global = true)]
+    database_url: Option<String>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Apply pending database migrations and exit.
+    Migrate,
+    /// Run the MCP server.
+    Serve(ServeArgs),
+    /// Manage teams.
+    #[command(subcommand)]
+    Team(TeamCmd),
+    /// Manage agents (one per Claude Code instance).
+    #[command(subcommand)]
+    Agent(AgentCmd),
+    /// Manage bearer tokens.
+    #[command(subcommand)]
+    Token(TokenCmd),
+    /// Manage outgoing webhooks (Slack/Discord/generic).
+    #[command(subcommand)]
+    Webhook(WebhookCmd),
+    /// Talk to a running bus from the console, as an agent. Everything the MCP
+    /// tools can do: send/read messages, claim tasks, notes, presence.
+    Client(client::ClientArgs),
+    /// Print a ready-to-paste .mcp.json snippet.
+    McpConfig {
+        /// Public URL of the /mcp endpoint.
+        #[arg(long, default_value = "http://localhost:8787/mcp")]
+        url: String,
+        /// The token issued to this agent.
+        #[arg(long)]
+        token: String,
+    },
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    /// Address to bind.
+    #[arg(long, env = "BUS_BIND", default_value = "0.0.0.0:8787")]
+    bind: String,
+
+    /// Comma-separated hostnames accepted in the Host header. Use "*" to accept
+    /// any host, which is fine behind a proxy that already validates it.
+    #[arg(
+        long,
+        env = "BUS_ALLOWED_HOSTS",
+        default_value = "localhost,127.0.0.1,0.0.0.0,[::1]"
+    )]
+    allowed_hosts: String,
+
+    /// Comma-separated browser origins to accept. Empty disables the check.
+    #[arg(long, env = "BUS_ALLOWED_ORIGINS", default_value = "")]
+    allowed_origins: String,
+
+    /// Run migrations on startup.
+    #[arg(long, env = "BUS_AUTO_MIGRATE", default_value_t = true)]
+    auto_migrate: bool,
+}
+
+#[derive(Subcommand)]
+enum TeamCmd {
+    Create {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    List,
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    Add {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Also mint a token for the new agent.
+        #[arg(long, default_value_t = true)]
+        with_token: bool,
+    },
+    List {
+        #[arg(long)]
+        team: String,
+    },
+    Disable {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebhookCmd {
+    Add {
+        #[arg(long)]
+        team: String,
+        /// Destination URL (Slack/Discord webhook URL, or any JSON endpoint).
+        #[arg(long)]
+        url: String,
+        /// Payload format: slack, discord or generic.
+        #[arg(long, default_value = "slack")]
+        kind: String,
+        /// Comma-separated event kinds: message,task,lock,note.
+        #[arg(long, default_value = "message,task")]
+        events: String,
+        /// Only forward messages from this channel (messages only).
+        #[arg(long)]
+        channel: Option<String>,
+    },
+    List {
+        #[arg(long)]
+        team: String,
+    },
+    Remove {
+        #[arg(long)]
+        id: Uuid,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenCmd {
+    Issue {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    List {
+        #[arg(long)]
+        team: String,
+    },
+    Revoke {
+        #[arg(long)]
+        id: Uuid,
+    },
+}
+
+fn split_csv(s: &str) -> Vec<String> {
+    if s.trim() == "*" {
+        return Vec::new();
+    }
+    s.split(',')
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "ai_crewmate=info,tower_http=info,warn".into()),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    // Commands that talk to the bus over HTTP (or to nothing at all) do not
+    // need a database connection.
+    match cli.command {
+        Command::McpConfig { url, token } => {
+            admin::print_mcp_config(&url, &token);
+            return Ok(());
+        }
+        Command::Client(args) => return client::run(args).await,
+        _ => {}
+    }
+
+    let url = cli
+        .database_url
+        .clone()
+        .context("DATABASE_URL is not set (pass --database-url or set the env var)")?;
+    let pool = PgPoolOptions::new()
+        .max_connections(20)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&url)
+        .await
+        .context("could not connect to Postgres")?;
+
+    match cli.command {
+        Command::McpConfig { .. } | Command::Client(_) => unreachable!("handled above"),
+
+        Command::Migrate => {
+            MIGRATOR.run(&pool).await?;
+            println!("migrations applied");
+        }
+
+        Command::Serve(args) => {
+            if args.auto_migrate {
+                MIGRATOR.run(&pool).await?;
+                tracing::info!("migrations applied");
+            }
+            let allowed_hosts = split_csv(&args.allowed_hosts);
+            if allowed_hosts.is_empty() {
+                tracing::warn!(
+                    "Host header validation is disabled; make sure a proxy in front of this \
+                     service validates it"
+                );
+            }
+            serve::run(
+                pool,
+                serve::ServeOptions {
+                    bind: args.bind,
+                    allowed_hosts,
+                    allowed_origins: split_csv(&args.allowed_origins),
+                },
+            )
+            .await?;
+        }
+
+        Command::Team(cmd) => match cmd {
+            TeamCmd::Create { slug, name } => admin::team_create(&pool, &slug, name).await?,
+            TeamCmd::List => admin::team_list(&pool).await?,
+        },
+
+        Command::Agent(cmd) => match cmd {
+            AgentCmd::Add {
+                team,
+                name,
+                display_name,
+                with_token,
+            } => admin::agent_add(&pool, &team, &name, display_name, with_token).await?,
+            AgentCmd::List { team } => admin::agent_list(&pool, &team).await?,
+            AgentCmd::Disable { team, name } => admin::agent_disable(&pool, &team, &name).await?,
+        },
+
+        Command::Token(cmd) => match cmd {
+            TokenCmd::Issue { team, agent, label } => {
+                admin::token_issue(&pool, &team, &agent, label).await?
+            }
+            TokenCmd::List { team } => admin::token_list(&pool, &team).await?,
+            TokenCmd::Revoke { id } => admin::token_revoke(&pool, id).await?,
+        },
+
+        Command::Webhook(cmd) => match cmd {
+            WebhookCmd::Add {
+                team,
+                url,
+                kind,
+                events,
+                channel,
+            } => webhooks::webhook_add(&pool, &team, &url, &kind, &events, channel).await?,
+            WebhookCmd::List { team } => webhooks::webhook_list(&pool, &team).await?,
+            WebhookCmd::Remove { id } => webhooks::webhook_remove(&pool, id).await?,
+        },
+    }
+
+    Ok(())
+}

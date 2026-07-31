@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "crewmate": {
+      "type": "http",
+      "url": "${BUS_URL}",
+      "headers": {
+        "Authorization": "Bearer ${BUS_TOKEN}"
+      }
+    }
+  }
+}

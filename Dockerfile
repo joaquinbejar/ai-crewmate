@@ -1,0 +1,33 @@
+# ---- build stage ----------------------------------------------------------
+FROM rust:1.95-slim AS build
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+# Cache the dependency graph.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "" > src/lib.rs && \
+    cargo build --release 2>/dev/null || true
+
+COPY src ./src
+COPY migrations ./migrations
+RUN touch src/main.rs src/lib.rs && cargo build --release
+
+# ---- runtime stage ---------------------------------------------------------
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --system --home /app bus
+WORKDIR /app
+COPY --from=build /app/target/release/ai-crewmate /usr/local/bin/ai-crewmate
+USER bus
+
+EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=3s \
+    CMD curl -fsS http://localhost:8787/health || exit 1
+
+ENTRYPOINT ["ai-crewmate"]
+CMD ["serve"]

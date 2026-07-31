@@ -1,0 +1,75 @@
+[package]
+name = "ai-crewmate"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+description = "MCP server that lets Claude Code instances across a team exchange messages, coordinate tasks, share presence and keep shared notes, backed by Postgres"
+license = "MIT"
+
+[[bin]]
+name = "ai-crewmate"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3.0", features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+    "server-side-http",
+    "tower",
+    # client side, for `ai-crewmate client ...`
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+schemars = "1"
+
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+http = "1"
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+    "macros",
+] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+subtle = "2"
+
+# outgoing webhooks (same TLS stack rmcp's client already pulls in)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

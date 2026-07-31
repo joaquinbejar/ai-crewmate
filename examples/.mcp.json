@@ -1,0 +1,12 @@
+{
+  "//": "Drop this in the repo root as .mcp.json (project scope) or merge into ~/.claude.json. Each teammate uses their OWN token; never share tokens between people.",
+  "mcpServers": {
+    "crewmate": {
+      "type": "http",
+      "url": "https://bus.your-company.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TEAM_BUS_TOKEN}"
+      }
+    }
+  }
+}
