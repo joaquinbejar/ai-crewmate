@@ -16,6 +16,7 @@ agente (el tuyo, el de cada compañero) se conecta con su propio token y puede:
 | Coordinación de tareas con leases y **dependencias** (`depends_on`) | `create_task`, `claim_task`, `claim_next_task`, `renew_task_lease`, `release_task`, `complete_task`, `list_tasks`, `get_task` |
 | **Tiempo real**: bloquearse hasta que pase algo relevante (LISTEN/NOTIFY) | `wait_for_updates` |
 | **RPC agente↔agente**: preguntar a un compañero y esperar su respuesta en una llamada | `ask_agent` |
+| **Adjuntos**: diffs, logs, archivos pequeños (≤256 KiB) en mensajes y tareas | `attach_file`, `get_attachment` (+ `attachments` en `post_message`) |
 | **Locks genéricos** con TTL sobre recursos ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
 | Presencia (quién está en qué repo/rama haciendo qué) | `heartbeat`, `list_agents` |
 | Memoria compartida del equipo (notas con historial) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
@@ -168,6 +169,9 @@ ai-crew-sync client task claim refactor-auth
 ai-crew-sync client task done refactor-auth --result "merged en #421"
 ai-crew-sync client lock acquire deploy:staging --purpose "sacando 1.4.2"
 ai-crew-sync client lock release deploy:staging
+ai-crew-sync client send --channel dev --body "fix del parser" --file fix.diff
+ai-crew-sync client attach fix-parser --file repro.log   # adjuntar a una tarea
+ai-crew-sync client download 3 --out fix.diff            # descargar adjunto por id
 ai-crew-sync client ask marta "¿staging lleva pg16?"   # DM + espera, una llamada
 ai-crew-sync client wait --timeout-seconds 55   # bloquea hasta que pase algo
 ai-crew-sync client digest --hours 24           # resumen para el standup
@@ -199,7 +203,7 @@ Postgres); no hay nada más que desplegar.
 ```bash
 # Postgres de pruebas
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=bus -e POSTGRES_USER=bus \
-  -e POSTGRES_DB=bus postgres:16-alpine
+  -e POSTGRES_DB=bus postgres:18-alpine
 
 export DATABASE_URL=postgres://bus:bus@localhost:5432/bus
 cargo run -- migrate

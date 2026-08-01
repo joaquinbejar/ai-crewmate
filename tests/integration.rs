@@ -262,6 +262,8 @@ async fn tools_are_advertised_with_schemas() {
         "create_channel",
         "search_messages",
         "ask_agent",
+        "attach_file",
+        "get_attachment",
         "create_task",
         "claim_task",
         "claim_next_task",
@@ -954,6 +956,99 @@ async fn ask_agent_returns_the_teammates_answer() {
 
     let _ = joaquin.cancel().await;
     let _ = marta.cancel().await;
+}
+
+#[tokio::test]
+async fn attachments_travel_with_messages_and_tasks() {
+    use base64::Engine;
+    let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
+
+    let h = require_db!("t_attach");
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let b = seed_agent(&h.pool, "acme", "marta").await;
+    let c = seed_agent(&h.pool, "acme", "pedro").await;
+    let joaquin = connect(&h.base, &a).await;
+    let marta = connect(&h.base, &b).await;
+    let pedro = connect(&h.base, &c).await;
+
+    let diff = "diff --git a/src/lib.rs b/src/lib.rs\n-old\n+new\n";
+
+    // A channel message ships with its file in one call.
+    call(&joaquin, "create_channel", json!({"name": "dev"})).await;
+    let posted = call(
+        &joaquin,
+        "post_message",
+        json!({
+            "channel": "dev", "body": "parser fix attached",
+            "attachments": [{
+                "filename": "fix.diff", "content_type": "text/plain",
+                "data_base64": b64(diff.as_bytes())
+            }]
+        }),
+    )
+    .await;
+    let att = &posted["message"]["attachments"][0];
+    assert_eq!(att["filename"], "fix.diff", "{posted:?}");
+    let att_id = att["id"].as_i64().unwrap();
+
+    // A teammate sees the attachment listed and downloads identical bytes.
+    let read = call(&marta, "read_messages", json!({"scope": "dev"})).await;
+    let msg = read["messages"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(msg["attachments"][0]["id"], att_id, "{msg:?}");
+    let got = call(&marta, "get_attachment", json!({"id": att_id})).await;
+    assert_eq!(got["data_base64"].as_str().unwrap(), b64(diff.as_bytes()));
+    assert_eq!(got["uploaded_by"], "joaquin");
+
+    // DM attachments are invisible to anyone but the two parties.
+    let dm = call(
+        &joaquin,
+        "post_message",
+        json!({
+            "to": "marta", "body": "the failing log",
+            "attachments": [{"filename": "secret.log", "data_base64": b64(b"boom")}]
+        }),
+    )
+    .await;
+    let dm_att = dm["message"]["attachments"][0]["id"].as_i64().unwrap();
+    call(&marta, "get_attachment", json!({"id": dm_att})).await;
+    let err = call_expect_error(&pedro, "get_attachment", json!({"id": dm_att})).await;
+    assert!(
+        err.contains("not found"),
+        "third party must not see it: {err}"
+    );
+
+    // Tasks carry attachments too, from any teammate.
+    call(
+        &joaquin,
+        "create_task",
+        json!({"key": "fix-parser", "title": "Fix the parser"}),
+    )
+    .await;
+    call(
+        &marta,
+        "attach_file",
+        json!({"task": "fix-parser", "filename": "repro.log", "data_base64": b64(b"repro")}),
+    )
+    .await;
+    let task = call(&pedro, "get_task", json!({"key": "fix-parser"})).await;
+    assert_eq!(
+        task["task"]["attachments"][0]["filename"], "repro.log",
+        "{task:?}"
+    );
+
+    // The size cap rejects with an actionable message.
+    let big = vec![b'x'; 300 * 1024];
+    let err = call_expect_error(
+        &joaquin,
+        "attach_file",
+        json!({"task": "fix-parser", "filename": "big.bin", "data_base64": b64(&big)}),
+    )
+    .await;
+    assert!(err.contains("262144"), "must state the limit: {err}");
+
+    let _ = joaquin.cancel().await;
+    let _ = marta.cancel().await;
+    let _ = pedro.cancel().await;
 }
 
 #[tokio::test]

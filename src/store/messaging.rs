@@ -21,6 +21,7 @@ struct MessageRow {
     body: String,
     reply_to: Option<i64>,
     metadata: serde_json::Value,
+    attachments: serde_json::Value,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -34,6 +35,7 @@ impl From<MessageRow> for MessageInfo {
             body: r.body,
             reply_to: r.reply_to,
             metadata: r.metadata,
+            attachments: serde_json::from_value(r.attachments).unwrap_or_default(),
             created_at: ts(r.created_at),
         }
     }
@@ -47,6 +49,14 @@ const MESSAGE_SELECT: &str = r#"
            m.body,
            m.reply_to,
            m.metadata,
+           COALESCE(
+               (SELECT json_agg(json_build_object(
+                           'id', a.id, 'filename', a.filename,
+                           'content_type', a.content_type, 'size_bytes', a.size_bytes)
+                       ORDER BY a.id)
+                FROM attachments a WHERE a.message_id = m.id),
+               '[]'::json
+           ) AS attachments,
            m.created_at
     FROM messages m
     JOIN agents s        ON s.id = m.sender_agent_id
@@ -133,6 +143,9 @@ pub struct PostInput {
     pub body: String,
     pub reply_to: Option<i64>,
     pub metadata: Option<serde_json::Value>,
+    /// Already decoded and size-checked; inserted in the same transaction as
+    /// the message so readers never see the message without its files.
+    pub attachments: Vec<super::attachments::NewAttachment>,
 }
 
 pub async fn post_message(
@@ -199,6 +212,10 @@ pub async fn post_message(
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
+    // Message + attachments commit together, so the NOTIFY that wakes
+    // teammates only fires once everything is readable.
+    let mut tx = pool.begin().await?;
+
     let (id,): (i64,) = sqlx::query_as(
         r#"
         INSERT INTO messages
@@ -214,13 +231,20 @@ pub async fn post_message(
     .bind(&body)
     .bind(input.reply_to)
     .bind(&metadata)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+
+    for att in &input.attachments {
+        super::attachments::insert_for_message(&mut tx, auth.team_id, id, auth.agent_id, att)
+            .await?;
+    }
 
     let row: MessageRow = sqlx::query_as(&format!("{MESSAGE_SELECT} WHERE m.id = $1"))
         .bind(id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+
+    tx.commit().await?;
 
     Ok(PostMessageResult {
         message: row.into(),

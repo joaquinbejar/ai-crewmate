@@ -52,6 +52,20 @@ pub struct PostMessageArgs {
     /// Optional structured payload attached to the message (any JSON object).
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// Small files to ship with the message (diffs, logs, configs). Max 8
+    /// files, 256 KiB each (decoded).
+    #[serde(default)]
+    pub attachments: Option<Vec<AttachmentInput>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AttachmentInput {
+    pub filename: String,
+    /// MIME type; defaults to application/octet-stream.
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// File content, base64-encoded.
+    pub data_base64: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -136,12 +150,25 @@ impl Bus {
         Parameters(args): Parameters<PostMessageArgs>,
     ) -> Result<Json<PostMessageResult>, ErrorData> {
         let auth = auth_of(&ctx)?;
+        let raw = args.attachments.unwrap_or_default();
+        if raw.len() > 8 {
+            return Err(
+                crate::error::BusError::invalid("a message carries at most 8 attachments").into(),
+            );
+        }
+        let attachments = raw
+            .into_iter()
+            .map(|a| {
+                crate::store::attachments::decode_input(&a.filename, a.content_type, &a.data_base64)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let input = messaging::PostInput {
             channel: args.channel,
             to: args.to,
             body: args.body,
             reply_to: args.reply_to,
             metadata: args.metadata,
+            attachments,
         };
         Ok(Json(messaging::post_message(&self.db, &auth, input).await?))
     }
@@ -226,6 +253,7 @@ impl Bus {
                         body: question.to_owned(),
                         reply_to: None,
                         metadata: Some(serde_json::json!({ "question": true })),
+                        attachments: Vec::new(),
                     },
                 )
                 .await?;

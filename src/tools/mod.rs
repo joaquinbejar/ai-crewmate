@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod events;
 pub mod locks;
 pub mod messaging;
@@ -55,6 +56,10 @@ Four capabilities:
   polling: it blocks until a relevant message/task/lock/note event arrives or
   the timeout passes. `team_digest` summarises the last hours of team activity —
   useful at session start to catch up.
+- Attachments. Small files (diffs, logs, configs — max 256 KiB each) travel
+  with messages (`post_message` `attachments`) or tasks (`attach_file`), and
+  are fetched with `get_attachment`. Share the artifact itself instead of
+  describing it.
 - Asking. When you need an answer from a specific teammate to continue,
   `ask_agent` sends them the question and waits for the reply in one call. If
   you receive a question (a direct message marked `"question": true`), answer
@@ -83,7 +88,8 @@ impl Bus {
             + Self::presence_router()
             + Self::notes_router()
             + Self::locks_router()
-            + Self::events_router();
+            + Self::events_router()
+            + Self::attachments_router();
         Self {
             db,
             hub,

@@ -5,6 +5,8 @@ pub mod notes;
 pub mod presence;
 pub mod tasks;
 
+pub mod attachments;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 

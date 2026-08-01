@@ -77,7 +77,30 @@ pub struct MessageInfo {
     pub body: String,
     pub reply_to: Option<i64>,
     pub metadata: serde_json::Value,
+    /// Files attached to this message; fetch content with get_attachment.
+    pub attachments: Vec<AttachmentMeta>,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize, serde::Deserialize, JsonSchema)]
+pub struct AttachmentMeta {
+    /// Pass this id to get_attachment to download the content.
+    pub id: i64,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AttachmentContent {
+    pub id: i64,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub uploaded_by: String,
+    pub created_at: String,
+    /// The file content, base64-encoded.
+    pub data_base64: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -122,6 +145,8 @@ pub struct TaskInfo {
     pub lease_expired: bool,
     pub result: Option<String>,
     pub metadata: serde_json::Value,
+    /// Files attached to this task; fetch content with get_attachment.
+    pub attachments: Vec<AttachmentMeta>,
     pub created_by: Option<String>,
     pub created_at: String,
     pub updated_at: String,

@@ -1,6 +1,6 @@
 [package]
 name = "ai-crew-sync"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 description = "MCP server that lets a team's AI coding agents (Claude Code, Codex, Cursor or any MCP client) exchange messages, coordinate tasks, share presence and keep shared notes, backed by Postgres"
@@ -65,6 +65,7 @@ dotenvy = "0.15"
 sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
+base64 = "0.22"
 subtle = "2"
 
 # outgoing webhooks (same TLS stack rmcp's client already pulls in)
@@ -72,6 +73,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"

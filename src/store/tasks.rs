@@ -24,6 +24,7 @@ struct TaskRow {
     lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     result: Option<String>,
     metadata: serde_json::Value,
+    attachments: serde_json::Value,
     created_by: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -48,6 +49,7 @@ impl From<TaskRow> for TaskInfo {
             lease_expired,
             result: r.result,
             metadata: r.metadata,
+            attachments: serde_json::from_value(r.attachments).unwrap_or_default(),
             created_by: r.created_by,
             created_at: ts(r.created_at),
             updated_at: ts(r.updated_at),
@@ -77,6 +79,14 @@ const TASK_SELECT: &str = r#"
            t.lease_expires_at,
            t.result,
            t.metadata,
+           COALESCE(
+               (SELECT json_agg(json_build_object(
+                           'id', a.id, 'filename', a.filename,
+                           'content_type', a.content_type, 'size_bytes', a.size_bytes)
+                       ORDER BY a.id)
+                FROM attachments a WHERE a.task_id = t.id),
+               '[]'::json
+           ) AS attachments,
            crb.name AS created_by,
            t.created_at,
            t.updated_at

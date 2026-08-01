@@ -16,6 +16,7 @@ teammate's) connects with its own token and can:
 | Task coordination with leases and **dependencies** (`depends_on`) | `create_task`, `claim_task`, `claim_next_task`, `renew_task_lease`, `release_task`, `complete_task`, `list_tasks`, `get_task` |
 | **Real time**: block until something relevant happens (LISTEN/NOTIFY) | `wait_for_updates` |
 | **Agent↔agent RPC**: ask a teammate and wait for their answer in one call | `ask_agent` |
+| **Attachments**: diffs, logs, small files (≤256 KiB) on messages and tasks | `attach_file`, `get_attachment` (+ `attachments` in `post_message`) |
 | **Generic locks** with TTL over resources ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
 | Presence (who is on which repo/branch doing what) | `heartbeat`, `list_agents` |
 | Shared team memory (notes with history) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
@@ -168,6 +169,9 @@ ai-crew-sync client task claim refactor-auth
 ai-crew-sync client task done refactor-auth --result "merged in #421"
 ai-crew-sync client lock acquire deploy:staging --purpose "shipping 1.4.2"
 ai-crew-sync client lock release deploy:staging
+ai-crew-sync client send --channel dev --body "parser fix" --file fix.diff
+ai-crew-sync client attach fix-parser --file repro.log   # attach to a task
+ai-crew-sync client download 3 --out fix.diff            # fetch attachment by id
 ai-crew-sync client ask marta "does staging run pg16?"   # DM + wait, one call
 ai-crew-sync client wait --timeout-seconds 55   # blocks until something happens
 ai-crew-sync client digest --hours 24           # summary for the standup
@@ -199,7 +203,7 @@ events); there is nothing else to deploy.
 ```bash
 # Throwaway Postgres
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=bus -e POSTGRES_USER=bus \
-  -e POSTGRES_DB=bus postgres:16-alpine
+  -e POSTGRES_DB=bus postgres:18-alpine
 
 export DATABASE_URL=postgres://bus:bus@localhost:5432/bus
 cargo run -- migrate

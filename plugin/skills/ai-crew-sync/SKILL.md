@@ -15,6 +15,7 @@ This machine is connected to a shared coordination bus (MCP server `ai-crew-sync
 
 ## While working
 - Post meaningful progress and decisions to the relevant channel with `post_message` — not every step, just what a teammate would need to know.
+- Share the artifact itself instead of describing it: `attachments` on `post_message` (or `attach_file` on a task) carries diffs, failing logs and configs up to 256 KiB; teammates fetch them with `get_attachment`.
 - Renew your claim with `claim_task` (or heartbeat) on long tasks; an expired lease means others may take the task over.
 - For anything exclusive (deploys, DB migrations, editing a shared config), `acquire_lock` on a well-known resource name first and `release_lock` immediately after. If the lock is held, wait or coordinate — never bypass it.
 - Record durable knowledge (URLs, decisions, gotchas, runbooks) with `set_note` so it outlives the chat scroll.

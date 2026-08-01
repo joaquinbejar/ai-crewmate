@@ -58,6 +58,25 @@ pub enum ClientCmd {
         body: String,
         #[arg(long)]
         reply_to: Option<i64>,
+        /// Attach a file (repeatable). Max 8 files, 256 KiB each.
+        #[arg(long)]
+        file: Vec<std::path::PathBuf>,
+    },
+    /// Attach a file to a task.
+    Attach {
+        /// Task key.
+        task: String,
+        #[arg(long)]
+        file: std::path::PathBuf,
+        #[arg(long)]
+        content_type: Option<String>,
+    },
+    /// Download an attachment by id.
+    Download {
+        id: i64,
+        /// Output path; defaults to the attachment's filename.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
     /// Ask a teammate's agent and wait for the answer.
     Ask {
@@ -253,19 +272,64 @@ fn compact(value: Value) -> Value {
     }
 }
 
-fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
+fn guess_content_type(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "txt" | "md" | "log" | "diff" | "patch" | "rs" | "toml" | "yml" | "yaml" | "sh" => {
+            "text/plain"
+        }
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+fn attachment_json(path: &std::path::Path, content_type: Option<&str>) -> anyhow::Result<Value> {
+    use base64::Engine;
+    let data = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_owned();
+    Ok(json!({
+        "filename": filename,
+        "content_type": content_type.unwrap_or_else(|| guess_content_type(path)),
+        "data_base64": base64::engine::general_purpose::STANDARD.encode(&data),
+    }))
+}
+
+fn to_call(cmd: &ClientCmd) -> anyhow::Result<Option<(&'static str, Value)>> {
     let (tool, args): (&str, Value) = match cmd {
         ClientCmd::Whoami => ("whoami", json!({})),
-        ClientCmd::Tools => return None,
+        ClientCmd::Tools => return Ok(None),
         ClientCmd::Send {
             channel,
             to,
             body,
             reply_to,
-        } => (
-            "post_message",
-            json!({"channel": channel, "to": to, "body": body, "reply_to": reply_to}),
-        ),
+            file,
+        } => {
+            let attachments = file
+                .iter()
+                .map(|p| attachment_json(p, None))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            (
+                "post_message",
+                json!({
+                    "channel": channel, "to": to, "body": body, "reply_to": reply_to,
+                    "attachments": if attachments.is_empty() { Value::Null } else { json!(attachments) }
+                }),
+            )
+        }
+        ClientCmd::Attach {
+            task,
+            file,
+            content_type,
+        } => {
+            let mut att = attachment_json(file, content_type.as_deref())?;
+            att["task"] = json!(task);
+            ("attach_file", att)
+        }
+        ClientCmd::Download { id, .. } => ("get_attachment", json!({"id": id})),
         ClientCmd::Ask {
             to,
             question,
@@ -385,7 +449,7 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
         },
         ClientCmd::Call { .. } => unreachable!("handled by caller"),
     };
-    Some((tool, compact(args)))
+    Ok(Some((tool, compact(args))))
 }
 
 pub async fn run(args: ClientArgs) -> anyhow::Result<()> {
@@ -435,7 +499,7 @@ async fn run_command(
             (tool.clone(), parsed)
         }
         other => {
-            let (tool, call_args) = to_call(other).expect("tools handled above");
+            let (tool, call_args) = to_call(other)?.expect("tools handled above");
             (tool.to_string(), call_args)
         }
     };
@@ -458,7 +522,7 @@ async fn run_command(
     if args.json {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        render(&args.command, &value);
+        render(&args.command, &value)?;
     }
     Ok(())
 }
@@ -515,7 +579,7 @@ fn render_task_line(t: &Value) {
     );
 }
 
-fn render(cmd: &ClientCmd, value: &Value) {
+fn render(cmd: &ClientCmd, value: &Value) -> anyhow::Result<()> {
     match cmd {
         ClientCmd::Whoami => {
             println!(
@@ -539,6 +603,31 @@ fn render(cmd: &ClientCmd, value: &Value) {
                 println!("(no answer yet)");
                 println!("{}", field(value, "suggestion"));
             }
+        }
+        ClientCmd::Attach { .. } => {
+            println!(
+                "attached [{}] {} ({} bytes)",
+                value["id"],
+                field(value, "filename"),
+                value["size_bytes"]
+            );
+        }
+        ClientCmd::Download { out, .. } => {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(field(value, "data_base64"))
+                .context("server returned invalid base64")?;
+            let path = out
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(field(value, "filename")));
+            std::fs::write(&path, data)
+                .with_context(|| format!("cannot write {}", path.display()))?;
+            println!(
+                "wrote {} ({} bytes, {})",
+                path.display(),
+                value["size_bytes"],
+                field(value, "content_type")
+            );
         }
         ClientCmd::ChannelCreate { .. } => {
             println!("channel #{} ready", field(value, "name"));
@@ -740,4 +829,5 @@ fn render(cmd: &ClientCmd, value: &Value) {
             println!("{}", serde_json::to_string_pretty(value).unwrap());
         }
     }
+    Ok(())
 }
