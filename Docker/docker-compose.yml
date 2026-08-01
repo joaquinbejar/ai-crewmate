@@ -1,15 +1,15 @@
 # Works with plain compose and with Docker Swarm:
 #
-#   docker compose -f Docker/docker-compose.yml up -d
-#   docker stack deploy -c Docker/docker-compose.yml crew
+#   make up        # = docker compose --project-directory . -f Docker/docker-compose.yml up -d
+#   make deploy    # = docker stack deploy -c Docker/docker-compose.yml crew
 #
-# Every variable has a default; override from the environment (or Docker/.env
-# under plain compose — Swarm does not read .env, export them or use
-# `env $(cat Docker/.env) docker stack deploy ...`). Change POSTGRES_PASSWORD
+# Every variable has a default; override from the environment (or ./.env at
+# the repo root under plain compose — Swarm does not read .env, export them
+# or use `env $(cat .env) docker stack deploy ...`). Change POSTGRES_PASSWORD
 # for anything reachable from outside your machine.
 #
-# The compose project name comes from COMPOSE_PROJECT_NAME in Docker/.env
-# (a top-level `name:` here would break `docker stack deploy`, which rejects
+# The compose project name comes from COMPOSE_PROJECT_NAME in ./.env (a
+# top-level `name:` here would break `docker stack deploy`, which rejects
 # the property; Swarm names the stack from the CLI argument instead).
 services:
   db:

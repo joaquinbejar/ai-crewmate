@@ -6,7 +6,10 @@
 # `make check` is the pre-push gate and runs offline; `make test` needs
 # docker for its throwaway Postgres.
 
-COMPOSE      = docker compose -f Docker/docker-compose.yml
+# --project-directory keeps the repo root as the project dir, so compose
+# reads ./.env and names the project from COMPOSE_PROJECT_NAME there even
+# though the files live under Docker/.
+COMPOSE      = docker compose --project-directory . -f Docker/docker-compose.yml
 COMPOSE_DEV  = $(COMPOSE) -f Docker/docker-compose.dev.yml
 STACK       ?= crew
 
