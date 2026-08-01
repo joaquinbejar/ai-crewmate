@@ -281,6 +281,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
+          # A tag push should produce a finished release without anyone
+          # opening a browser. If the release does not exist yet, create it
+          # with generated notes — a human can always rewrite the body, but
+          # nobody should have to create the object before the assets have
+          # somewhere to land.
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "no release for $GITHUB_REF_NAME yet — creating it"
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" --generate-notes --latest
+          fi
+
           find dl -type f \( -name '*.tar.gz' -o -name '*.sha256' \
                               -o -name '*.deb' -o -name '*.rpm' \) -print0 \
             | xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY"
