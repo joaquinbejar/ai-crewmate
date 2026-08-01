@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-pub const TOKEN_PREFIX: &str = "acm_";
+pub const TOKEN_PREFIX: &str = "acs_";
 
 /// Identity resolved from the bearer token, injected into the HTTP request
 /// extensions so tool handlers can read it. Every tool call is scoped to this.
@@ -33,7 +33,7 @@ pub fn hash_token(raw: &str) -> Vec<u8> {
 }
 
 /// First 12 characters, kept in plaintext purely so humans can tell tokens
-/// apart in `ai-crewmate token list`.
+/// apart in `ai-crew-sync token list`.
 pub fn token_prefix(raw: &str) -> String {
     raw.chars().take(12).collect()
 }

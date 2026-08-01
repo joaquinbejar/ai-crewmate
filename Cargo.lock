@@ -12,8 +12,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-crewmate"
-version = "0.2.0"
+name = "ai-crew-sync"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",

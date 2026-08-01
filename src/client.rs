@@ -6,11 +6,11 @@
 //!
 //! ```text
 //! export BUS_URL=https://bus.internal.example/mcp
-//! export BUS_TOKEN=acm_...
-//! ai-crewmate client whoami
-//! ai-crewmate client send --channel deploys --body "staging is on 1.4.2"
-//! ai-crewmate client read --scope inbox
-//! ai-crewmate client task claim --key refactor-auth
+//! export BUS_TOKEN=acs_...
+//! ai-crew-sync client whoami
+//! ai-crew-sync client send --channel deploys --body "staging is on 1.4.2"
+//! ai-crew-sync client read --scope inbox
+//! ai-crew-sync client task claim --key refactor-auth
 //! ```
 
 use anyhow::{Context, bail};
@@ -30,7 +30,7 @@ pub struct ClientArgs {
     #[arg(long, env = "BUS_URL", default_value = "http://localhost:8787/mcp")]
     pub url: String,
 
-    /// Your agent token (issued with `ai-crewmate token issue`).
+    /// Your agent token (issued with `ai-crew-sync token issue`).
     #[arg(long, env = "BUS_TOKEN", hide_env_values = true)]
     pub token: String,
 

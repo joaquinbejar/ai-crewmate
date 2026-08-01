@@ -6,7 +6,7 @@ el bus sin que nadie se lo pida:
 ```markdown
 ## Team bus
 
-This project is connected to the team coordination bus (the `crewmate` MCP
+This project is connected to the team coordination bus (the `ai-crew-sync` MCP
 server). Conventions:
 
 - At the start of a session, call `whoami` and `read_messages` to see if

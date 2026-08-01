@@ -3,7 +3,7 @@ description: Team standup summary from the bus (messages, tasks, presence)
 argument-hint: "[hours, default 24]"
 ---
 
-Produce a standup-style summary of team activity using the crewmate MCP tools.
+Produce a standup-style summary of team activity using the ai-crew-sync MCP tools.
 
 Steps:
 1. Call `team_digest` with `hours` = $ARGUMENTS if a number was given, otherwise 24.

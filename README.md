@@ -1,7 +1,7 @@
-# ai-crewmate
+# ai-crew-sync
 
-[![CI](https://github.com/joaquinbejar/ai-crewmate/actions/workflows/ci.yml/badge.svg)](https://github.com/joaquinbejar/ai-crewmate/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/ai-crewmate.svg)](https://crates.io/crates/ai-crewmate)
+[![CI](https://github.com/joaquinbejar/ai-crew-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/joaquinbejar/ai-crew-sync/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ai-crew-sync.svg)](https://crates.io/crates/ai-crew-sync)
 
 *Read this in [Spanish](README.es.md).*
 
@@ -39,9 +39,9 @@ Design decisions:
 ## Install
 
 ```bash
-cargo install ai-crewmate
+cargo install ai-crew-sync
 # or
-docker pull ghcr.io/joaquinbejar/ai-crewmate:latest
+docker pull ghcr.io/joaquinbejar/ai-crew-sync:latest
 ```
 
 ## Quick start (docker-compose)
@@ -53,9 +53,9 @@ docker compose up -d --build
 
 The server migrates the database on startup and exposes:
 
-- `POST /mcp` — MCP endpoint (requires `Authorization: Bearer acm_...`)
+- `POST /mcp` — MCP endpoint (requires `Authorization: Bearer acs_...`)
 - `GET /health` — for the load balancer
-- `GET /dashboard?token=acm_...` — read-only panel for humans (presence,
+- `GET /dashboard?token=acs_...` — read-only panel for humans (presence,
   tasks, locks, latest channel messages; DMs never appear). Auto-refreshes
   every 15s. The token goes in the URL, so treat it as a secret (or pass it
   as an `Authorization` header).
@@ -65,9 +65,9 @@ The server migrates the database on startup and exposes:
 ```bash
 export DATABASE_URL=postgres://bus:...@localhost:5432/bus
 
-ai-crewmate team create --slug acme --name "Acme Squad"
-ai-crewmate agent add --team acme --name joaquin     # prints their token
-ai-crewmate agent add --team acme --name marta
+ai-crew-sync team create --slug acme --name "Acme Squad"
+ai-crew-sync agent add --team acme --name joaquin     # prints their token
+ai-crew-sync agent add --team acme --name marta
 ```
 
 Useful convention for `--name`: `person` or `person-machine` (`joaquin-laptop`)
@@ -84,28 +84,28 @@ This repo is also a Claude Code plugin *marketplace*. Each teammate runs,
 inside Claude Code:
 
 ```
-/plugin marketplace add your-org/ai-crewmate
-/plugin install crewmate@ai-crewmate
+/plugin marketplace add your-org/ai-crew-sync
+/plugin install ai-crew-sync@ai-crew-sync
 ```
 
 and exports in their shell (e.g. `~/.zshrc`):
 
 ```bash
 export BUS_URL=https://bus.your-company.com/mcp
-export BUS_TOKEN=acm_...   # their personal token, from `ai-crewmate agent add`
+export BUS_TOKEN=acs_...   # their personal token, from `ai-crew-sync agent add`
 ```
 
 The plugin comes fully preconfigured:
 
-- **MCP** `crewmate` pointing at `$BUS_URL` with their `$BUS_TOKEN` (no JSON
+- **MCP** `ai-crew-sync` pointing at `$BUS_URL` with their `$BUS_TOKEN` (no JSON
   editing by hand).
 - **Hooks**: on session start it heartbeats and injects a team summary into
   Claude (unread DMs, own tasks, `team_digest` of the last 8h — configurable
   with `BUS_DIGEST_HOURS`); after each response it renews presence with the
   checkout's repo/branch, and on session end it marks `idle`. If
   `BUS_URL`/`BUS_TOKEN` are not defined, the hooks do nothing.
-- **Commands**: `/crewmate:standup [hours]`, `/crewmate:catchup [hours]`,
-  `/crewmate:announce [#channel] message` and `/crewmate:ask <agent> <question>`.
+- **Commands**: `/ai-crew-sync:standup [hours]`, `/ai-crew-sync:catchup [hours]`,
+  `/ai-crew-sync:announce [#channel] message` and `/ai-crew-sync:ask <agent> <question>`.
 - **Skill** with the conventions (claim before working, locks for deploys,
   `wait_for_updates` to wait for replies), which Claude loads only when
   coordination is needed.
@@ -121,7 +121,7 @@ environment variable (see `examples/.mcp.json`):
 ```json
 {
   "mcpServers": {
-    "crewmate": {
+    "ai-crew-sync": {
       "type": "http",
       "url": "https://bus.your-company.com/mcp",
       "headers": { "Authorization": "Bearer ${TEAM_BUS_TOKEN}" }
@@ -133,7 +133,7 @@ environment variable (see `examples/.mcp.json`):
 You can also generate the block with:
 
 ```bash
-ai-crewmate mcp-config --url https://bus.your-company.com/mcp --token acm_...
+ai-crew-sync mcp-config --url https://bus.your-company.com/mcp --token acs_...
 ```
 
 With that, each Claude Code sees the bus tools and uses them on its own. For
@@ -147,25 +147,25 @@ useful for humans, scripts and CI:
 
 ```bash
 export BUS_URL=https://bus.your-company.com/mcp
-export BUS_TOKEN=acm_...
+export BUS_TOKEN=acs_...
 
-ai-crewmate client whoami
-ai-crewmate client send --channel deploys --body "staging is on 1.4.2"
-ai-crewmate client send --to marta --body "look at PR 421"
-ai-crewmate client read --scope inbox
-ai-crewmate client agents
-ai-crewmate client task create refactor-auth --title "Rewrite token refresh"
-ai-crewmate client task create update-clients --title "Update clients" \
+ai-crew-sync client whoami
+ai-crew-sync client send --channel deploys --body "staging is on 1.4.2"
+ai-crew-sync client send --to marta --body "look at PR 421"
+ai-crew-sync client read --scope inbox
+ai-crew-sync client agents
+ai-crew-sync client task create refactor-auth --title "Rewrite token refresh"
+ai-crew-sync client task create update-clients --title "Update clients" \
     --depends-on refactor-auth              # pipeline: blocked until the 1st is done
-ai-crewmate client task claim refactor-auth
-ai-crewmate client task done refactor-auth --result "merged in #421"
-ai-crewmate client lock acquire deploy:staging --purpose "shipping 1.4.2"
-ai-crewmate client lock release deploy:staging
-ai-crewmate client ask marta "does staging run pg16?"   # DM + wait, one call
-ai-crewmate client wait --timeout-seconds 55   # blocks until something happens
-ai-crewmate client digest --hours 24           # summary for the standup
-ai-crewmate client note set why-no-redis --scope api --value "..." --tags infra
-ai-crewmate client call get_task --args '{"key":"refactor-auth"}'   # escape hatch
+ai-crew-sync client task claim refactor-auth
+ai-crew-sync client task done refactor-auth --result "merged in #421"
+ai-crew-sync client lock acquire deploy:staging --purpose "shipping 1.4.2"
+ai-crew-sync client lock release deploy:staging
+ai-crew-sync client ask marta "does staging run pg16?"   # DM + wait, one call
+ai-crew-sync client wait --timeout-seconds 55   # blocks until something happens
+ai-crew-sync client digest --hours 24           # summary for the standup
+ai-crew-sync client note set why-no-redis --scope api --value "..." --tags infra
+ai-crew-sync client call get_task --args '{"key":"refactor-auth"}'   # escape hatch
 ```
 
 All subcommands accept `--json` for raw output (pipeable to `jq`).
@@ -177,11 +177,11 @@ channel message, task changing state, lock acquired/released, note updated.
 **Direct messages are never forwarded.**
 
 ```bash
-ai-crewmate webhook add --team acme \
+ai-crew-sync webhook add --team acme \
   --url https://hooks.slack.com/services/T000/B000/XXXX \
   --kind slack --events message,task --channel deploys   # --channel optional
-ai-crewmate webhook list --team acme
-ai-crewmate webhook remove --id <uuid>
+ai-crew-sync webhook list --team acme
+ai-crew-sync webhook remove --id <uuid>
 ```
 
 The dispatcher runs inside `serve` (it listens to Postgres LISTEN/NOTIFY
@@ -220,7 +220,7 @@ plugin/          Claude Code plugin (MCP + hooks + commands + skill)
   .mcp.json      MCP server parameterized with BUS_URL/BUS_TOKEN
   hooks/         SessionStart (catch-up + heartbeat), Stop and SessionEnd
   scripts/       bus-call.sh, heartbeat.sh, session-start.sh (curl + python3)
-  commands/      /crewmate:standup, /crewmate:catchup, /crewmate:announce
+  commands/      /ai-crew-sync:standup, /ai-crew-sync:catchup, /ai-crew-sync:announce
   skills/        coordination conventions
 .claude-plugin/marketplace.json   this repo doubles as a marketplace
 ```

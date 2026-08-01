@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use ai_crewmate::{
+use ai_crew_sync::{
     MIGRATOR,
     auth::{generate_token, hash_token, token_prefix},
     serve::{ServeOptions, build_router},
@@ -205,7 +205,7 @@ async fn unauthenticated_requests_are_rejected() {
 
     let resp = client
         .post(format!("{}/mcp", h.base))
-        .header("Authorization", "Bearer acm_deadbeef")
+        .header("Authorization", "Bearer acs_deadbeef")
         .header("Accept", "application/json, text/event-stream")
         .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
         .send()
@@ -1178,7 +1178,7 @@ async fn webhooks_forward_channel_messages_but_never_dms() {
         addr
     };
 
-    ai_crewmate::webhooks::webhook_add(
+    ai_crew_sync::webhooks::webhook_add(
         &h.pool,
         "acme",
         &format!("http://{catcher}/hook"),
@@ -1266,7 +1266,7 @@ async fn dashboard_requires_a_token_and_renders_team_state() {
     assert_eq!(resp.status(), 401, "no token → 401");
 
     let resp = http
-        .get(format!("{base}/dashboard?token=acm_bogus"))
+        .get(format!("{base}/dashboard?token=acs_bogus"))
         .send()
         .await
         .unwrap();

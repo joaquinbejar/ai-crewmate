@@ -1,7 +1,7 @@
 //! Read-only HTML dashboard for humans: who is online, what is claimed, what
 //! the channels are saying. Served by the bus itself at `/dashboard`.
 //!
-//! Auth: any agent token of the team, passed as `?token=acm_...` or as an
+//! Auth: any agent token of the team, passed as `?token=acs_...` or as an
 //! `Authorization: Bearer` header. Query-param tokens can end up in proxy
 //! logs — acceptable for an internal tool, documented in the README.
 //!
@@ -62,7 +62,7 @@ pub async fn render(
     let Some(raw) = raw else {
         return (
             StatusCode::UNAUTHORIZED,
-            Html("<h1>401</h1><p>Pass your agent token: <code>/dashboard?token=acm_…</code></p>"),
+            Html("<h1>401</h1><p>Pass your agent token: <code>/dashboard?token=acs_…</code></p>"),
         )
             .into_response();
     };
@@ -299,7 +299,7 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="15">
-<title>crewmate · {team}</title>
+<title>ai-crew-sync · {team}</title>
 <style>
 :root {{
   --surface: #fcfcfb; --card: #ffffff; --border: #e4e3df;
@@ -342,7 +342,7 @@ code {{ background: transparent; color: inherit; }}
 </style>
 </head>
 <body>
-<h1>crewmate · {team}</h1>
+<h1>ai-crew-sync · {team}</h1>
 <div class="sub">viewed as {viewer} · refreshes every 15s · direct messages never shown</div>
 
 <div class="tiles">

@@ -30,8 +30,8 @@ if not who and not dig:
 lines = []
 if who:
     lines.append(
-        f"[crewmate] You are agent '{who.get('agent')}' on team '{who.get('team')}'. "
-        "The team coordination bus (MCP server 'crewmate') is connected."
+        f"[ai-crew-sync] You are agent '{who.get('agent')}' on team '{who.get('team')}'. "
+        "The team coordination bus (MCP server 'ai-crew-sync') is connected."
     )
     dm = who.get("unread_direct_messages") or 0
     ct = who.get("open_claimed_tasks") or 0

@@ -22,12 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     rm -rf /var/lib/apt/lists/* && \
     useradd --system --home /app bus
 WORKDIR /app
-COPY --from=build /app/target/release/ai-crewmate /usr/local/bin/ai-crewmate
+COPY --from=build /app/target/release/ai-crew-sync /usr/local/bin/ai-crew-sync
 USER bus
 
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=3s \
     CMD curl -fsS http://localhost:8787/health || exit 1
 
-ENTRYPOINT ["ai-crewmate"]
+ENTRYPOINT ["ai-crew-sync"]
 CMD ["serve"]

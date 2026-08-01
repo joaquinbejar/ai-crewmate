@@ -1,4 +1,4 @@
-use ai_crewmate::{MIGRATOR, admin, client, serve, webhooks};
+use ai_crew_sync::{MIGRATOR, admin, client, serve, webhooks};
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use sqlx::postgres::PgPoolOptions;
@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(
-    name = "ai-crewmate",
+    name = "ai-crew-sync",
     version,
     about = "MCP coordination bus for a team of Claude Code agents, backed by Postgres"
 )]
@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "ai_crewmate=info,tower_http=info,warn".into()),
+                .unwrap_or_else(|_| "ai_crew_sync=info,tower_http=info,warn".into()),
         )
         .init();
 

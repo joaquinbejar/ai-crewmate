@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "crewmate": {
+    "ai-crew-sync": {
       "type": "http",
       "url": "${BUS_URL}",
       "headers": {

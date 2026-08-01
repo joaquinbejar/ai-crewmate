@@ -108,7 +108,7 @@ pub async fn run(pool: PgPool, opts: ServeOptions) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", opts.bind))?;
     let addr = listener.local_addr()?;
-    tracing::info!(%addr, "ai-crewmate listening; MCP endpoint at /mcp");
+    tracing::info!(%addr, "ai-crew-sync listening; MCP endpoint at /mcp");
 
     let shutdown = {
         let ct = ct.clone();

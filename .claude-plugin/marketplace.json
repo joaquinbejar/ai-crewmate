@@ -1,14 +1,14 @@
 {
-  "name": "ai-crewmate",
+  "name": "ai-crew-sync",
   "owner": {
     "name": "Joaquin Bejar"
   },
   "description": "Coordination bus for a team of Claude Code agents: shared messaging, task claims, presence, notes, locks and real-time wakeups over one MCP server backed by Postgres.",
   "plugins": [
     {
-      "name": "crewmate",
+      "name": "ai-crew-sync",
       "source": "./plugin",
-      "description": "Connects this Claude Code to your team's bus: MCP tools preconfigured, automatic presence heartbeats, catch-up on session start, and /crewmate:standup, /crewmate:catchup, /crewmate:announce commands."
+      "description": "Connects this Claude Code to your team's bus: MCP tools preconfigured, automatic presence heartbeats, catch-up on session start, and /ai-crew-sync:standup, /ai-crew-sync:catchup, /ai-crew-sync:announce commands."
     }
   ]
 }

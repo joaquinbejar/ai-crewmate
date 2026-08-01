@@ -210,7 +210,7 @@ pub async fn token_revoke(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
 pub fn print_mcp_config(url: &str, token: &str) {
     let cfg = serde_json::json!({
         "mcpServers": {
-            "crewmate": {
+            "ai-crew-sync": {
                 "type": "http",
                 "url": url,
                 "headers": { "Authorization": format!("Bearer {token}") }

@@ -21,7 +21,7 @@ services:
       DATABASE_URL: postgres://bus:${POSTGRES_PASSWORD}@db:5432/bus
       BUS_BIND: 0.0.0.0:8787
       BUS_ALLOWED_HOSTS: ${BUS_ALLOWED_HOSTS:-*}
-      RUST_LOG: ai_crewmate=info
+      RUST_LOG: ai_crew_sync=info
     ports:
       - "8787:8787"
     depends_on:

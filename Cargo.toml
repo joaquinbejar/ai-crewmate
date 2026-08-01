@@ -1,17 +1,17 @@
 [package]
-name = "ai-crewmate"
-version = "0.2.0"
+name = "ai-crew-sync"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "MCP server that lets Claude Code instances across a team exchange messages, coordinate tasks, share presence and keep shared notes, backed by Postgres"
 license = "MIT"
-repository = "https://github.com/joaquinbejar/ai-crewmate"
+repository = "https://github.com/joaquinbejar/ai-crew-sync"
 readme = "README.md"
 keywords = ["mcp", "claude", "agents", "coordination", "postgres"]
 categories = ["development-tools", "web-programming::http-server", "asynchronous"]
 
 [[bin]]
-name = "ai-crewmate"
+name = "ai-crew-sync"
 path = "src/main.rs"
 
 [dependencies]
@@ -22,7 +22,7 @@ rmcp = { version = "3.0", features = [
     "transport-streamable-http-server",
     "server-side-http",
     "tower",
-    # client side, for `ai-crewmate client ...`
+    # client side, for `ai-crew-sync client ...`
     "client",
     "transport-streamable-http-client-reqwest",
     "reqwest",
