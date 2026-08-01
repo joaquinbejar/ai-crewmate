@@ -31,7 +31,7 @@ help: ## List every target
 # --- verification -----------------------------------------------------------
 
 .PHONY: check
-check: fmt-check lint validate config-check ## Pre-push gate: format, clippy, compose files render, config documented. Offline.
+check: fmt-check lint validate config-check hooks-check ## Pre-push gate: format, clippy, compose renders, config documented, hooks sane. Offline.
 
 .PHONY: pre-push
 pre-push: check ## Alias for check
@@ -73,6 +73,10 @@ config-check: ## Fail if a configuration variable is missing from .env.example
 		echo "undocumented in .env.example:$$missing"; exit 1; \
 	fi; \
 	echo "config: every variable is documented"
+
+.PHONY: hooks-check
+hooks-check: ## Plugin hook regression tests (no bus, no network)
+	@sh plugin/scripts/test-hooks.sh
 
 .PHONY: test
 test: ## Integration tests against a throwaway Postgres (needs docker)
