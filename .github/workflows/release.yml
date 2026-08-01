@@ -9,7 +9,89 @@ permissions:
   packages: write
 
 jobs:
+  # A tag publishes nothing until the same gates that guard main have passed.
+  gates:
+    uses: ./.github/workflows/ci.yml
+
+  # v0.4.0 shipped an image that could not start: it was built against a newer
+  # glibc than its runtime carried, and CI never ran the binary. This job boots
+  # the real image against a real database and speaks MCP to it BEFORE the
+  # multi-arch push, so that class of break cannot reach a published tag again.
+  smoke:
+    name: release image boots and serves MCP
+    needs: gates
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: bus
+          POSTGRES_PASSWORD: bus
+          POSTGRES_DB: bus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://bus:bus@localhost:5432/bus
+      IMAGE: ai-crew-sync:smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the runner's architecture and load it locally
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the server (it migrates on startup)
+        run: |
+          docker run -d --name bus --network host \
+            -e DATABASE_URL="$DATABASE_URL" -e BUS_BIND=0.0.0.0:8787 \
+            "$IMAGE" serve
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:8787/health >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "server never became healthy:"; docker logs bus; exit 1
+
+      - name: Health endpoint reports a live database
+        run: |
+          body=$(curl -fsS http://localhost:8787/health)
+          echo "$body"
+          echo "$body" | grep -q '"database":"up"'
+
+      - name: An authenticated MCP call round-trips
+        run: |
+          docker run --rm --network host -e DATABASE_URL="$DATABASE_URL" \
+            "$IMAGE" team create --slug smoke --name Smoke
+          token=$(docker run --rm --network host -e DATABASE_URL="$DATABASE_URL" \
+            "$IMAGE" agent add --team smoke --name ci | grep -oE 'acs_[0-9a-f]+' | head -1)
+          [ -n "$token" ] || { echo "no token issued"; exit 1; }
+          agent=$(curl -fsS -X POST http://localhost:8787/mcp \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["structuredContent"]["agent"])')
+          echo "whoami -> $agent"
+          [ "$agent" = "ci" ] || { echo "unexpected identity"; exit 1; }
+
+      - name: Server logs (always)
+        if: always()
+        run: docker logs bus || true
+
   docker:
+    name: publish multi-arch image
+    needs: [gates, smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

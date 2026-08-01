@@ -226,6 +226,26 @@ postgres:18-alpine`), `export DATABASE_URL=postgres://bus:bus@localhost:5432/bus
 then `cargo run -- serve` (migrates on startup) and
 `TEST_DATABASE_URL=$DATABASE_URL cargo test`.
 
+### Toolchain policy
+
+The crate's MSRV is the `rust-version` in `Cargo.toml` (**1.88**). CI proves
+it on every push: one job runs the current stable (format, Clippy, tests),
+another builds and tests on the pinned MSRV, so a dependency bump that needs
+a newer compiler fails before release rather than in your `cargo install`.
+
+Raising the MSRV is a deliberate change — bump `rust-version`, the pin in
+`.github/workflows/ci.yml`, and this paragraph in the same PR, and say why in
+the release notes.
+
+The Docker image builds with a **newer** compiler than the MSRV on purpose
+(current codegen and security fixes for the published binary); the MSRV job
+is what guards the floor. The runtime image must track the Debian release of
+the builder image, or the binary links against a glibc the runtime lacks.
+
+Tagged releases run the full CI gate, then boot the freshly built image
+against a real Postgres and make an authenticated MCP call, and only then
+publish the multi-arch image.
+
 ## Layout
 
 ```

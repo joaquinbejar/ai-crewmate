@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
+  # Forward compatibility: the toolchain most contributors actually run.
+  # Owns the lint/format gates so they are enforced once, on one toolchain.
+  stable:
+    name: stable (fmt, clippy, tests)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -31,6 +35,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: stable
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -39,3 +45,57 @@ jobs:
         run: cargo test
         env:
           TEST_DATABASE_URL: postgres://test:test@localhost:5432/test
+
+  # The floor declared in Cargo.toml. A dependency bump or a language feature
+  # needing a newer compiler fails HERE rather than in a user's `cargo install`.
+  # Raising this pin is a deliberate change — see the MSRV policy in the README.
+  msrv:
+    name: MSRV 1.88 (build, tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - name: Assert the pin matches Cargo.toml
+        run: |
+          declared=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          if [ "$declared" != "1.88" ]; then
+            echo "Cargo.toml declares rust-version = $declared but this job pins 1.88."
+            echo "Update the toolchain here and the MSRV policy in the READMEs."
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --all-targets
+      - name: Tests
+        run: cargo test
+        env:
+          TEST_DATABASE_URL: postgres://test:test@localhost:5432/test
+
+  # The compose files must render from their defaults alone — a bare `make up`
+  # has to boot on a machine with no .env at all.
+  compose:
+    name: compose files render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate
+        run: |
+          docker compose --project-directory . -f Docker/docker-compose.yml config -q
+          docker compose --project-directory . -f Docker/docker-compose.yml \
+            -f Docker/docker-compose.dev.yml config -q
