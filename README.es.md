@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/joaquinbejar/ai-crew-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/joaquinbejar/ai-crew-sync/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/ai-crew-sync.svg)](https://crates.io/crates/ai-crew-sync)
+[![docs.rs](https://docs.rs/ai-crew-sync/badge.svg)](https://docs.rs/ai-crew-sync)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 *Read this in [English](README.md).*
 
@@ -212,18 +214,17 @@ Postgres); no hay nada más que desplegar.
 ## Desarrollo
 
 ```bash
-# Postgres de pruebas
-docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=bus -e POSTGRES_USER=bus \
-  -e POSTGRES_DB=bus postgres:18-alpine
-
-export DATABASE_URL=postgres://bus:bus@localhost:5432/bus
-cargo run -- migrate
-cargo run -- serve
-
-# Tests de integración (levantan el servidor real contra tu Postgres,
-# cada test en su propio schema)
-TEST_DATABASE_URL=$DATABASE_URL cargo test
+make check    # gate pre-push: rustfmt, clippy -D warnings, compose renderiza
+make test     # suite E2E contra un Postgres 18 desechable (necesita docker)
+make up-dev   # stack local construido desde este checkout
+make help     # todo lo demás
 ```
+
+O a mano: un Postgres local (`docker run -d -p 5432:5432 -e
+POSTGRES_PASSWORD=bus -e POSTGRES_USER=bus -e POSTGRES_DB=bus
+postgres:18-alpine`), `export DATABASE_URL=postgres://bus:bus@localhost:5432/bus`,
+después `cargo run -- serve` (migra al arrancar) y
+`TEST_DATABASE_URL=$DATABASE_URL cargo test`.
 
 ## Estructura
 
@@ -242,8 +243,10 @@ plugin/          plugin de Claude Code (MCP + hooks + comandos + skill)
   .mcp.json      servidor MCP parametrizado con BUS_URL/BUS_TOKEN
   hooks/         SessionStart (catch-up + heartbeat), Stop y SessionEnd
   scripts/       bus-call.sh, heartbeat.sh, session-start.sh (curl + python3)
-  commands/      /ai-crew-sync:standup, /ai-crew-sync:catchup, /ai-crew-sync:announce
+  commands/      /ai-crew-sync:standup|catchup|announce|ask
   skills/        convenciones de coordinación
+Docker/          Dockerfile + compose (imagen publicada, apto Swarm) + override dev
+Makefile         check / test / up / up-dev / deploy — `make help` lista todo
 .claude-plugin/marketplace.json   este repo funciona como marketplace
 ```
 
@@ -255,3 +258,28 @@ plugin/          plugin de Claude Code (MCP + hooks + comandos + skill)
 - Revoca tokens con `token revoke`; deshabilita personas con `agent disable`.
 - Los mensajes directos solo los ve el destinatario; canales, tareas, notas y
   presencia son visibles para todo el equipo (ese es el punto).
+
+## Contribuir y contacto
+
+¡Las contribuciones son bienvenidas! Si quieres contribuir:
+
+1. Haz fork del repositorio.
+2. Crea una rama para tu feature o corrección.
+3. Haz tus cambios y comprueba que el proyecto compila y los tests pasan (`make check && make test`).
+4. Commitea y sube tu rama a tu fork.
+5. Abre un pull request contra el repositorio principal.
+
+Para dudas, problemas o feedback, contacta con el mantenedor:
+
+### **Contacto**
+
+- **Autor**: Joaquín Béjar García
+- **Email**: <jb@taunais.com>
+- **Telegram**: [@joaquin_bejar](https://t.me/joaquin_bejar)
+- **Repositorio**: <https://github.com/joaquinbejar/ai-crew-sync>
+- **Crate**: <https://crates.io/crates/ai-crew-sync>
+- **Documentación**: <https://docs.rs/ai-crew-sync>
+
+¡Gracias por tu interés!
+
+**Licencia**: MIT
