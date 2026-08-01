@@ -1,0 +1,42 @@
+[Unit]
+Description=ai-crew-sync — MCP coordination bus for AI coding agents
+Documentation=https://github.com/joaquinbejar/ai-crew-sync
+# Wants, not Requires: the bus retries a database that is not up yet, and
+# refusing to start would be worse than backing off.
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=exec
+User=ai-crew-sync
+Group=ai-crew-sync
+
+# DATABASE_URL lives here, so it is root-readable only rather than visible in
+# `ps` or in the unit file.
+EnvironmentFile=/etc/ai-crew-sync/ai-crew-sync.env
+ExecStart=/usr/bin/ai-crew-sync serve
+
+Restart=on-failure
+RestartSec=3s
+
+# The bus needs no filesystem, no privileges and no home. Everything it keeps
+# is in Postgres.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# Only what an HTTP server and a Postgres client need.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
