@@ -70,7 +70,10 @@ base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 [dev-dependencies]
-reqwest = { version = "0.13", features = ["json", "rustls"] }
+# Mirrors the normal dependency exactly: Cargo unifies features across the
+# graph, so letting the dev entry pull defaults could re-enable a second TLS
+# backend in test builds.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 base64 = "0.22"
 
 [profile.release]
