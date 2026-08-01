@@ -17,6 +17,9 @@ const MAX_TITLE_BYTES: usize = 512;
 /// one messages get, because that is what an agent tends to paste into both.
 const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
 const MAX_RESULT_BYTES: usize = 64 * 1024;
+/// A pipeline with more upstream tasks than this wants restructuring, and an
+/// unbounded list is one INSERT per entry.
+const MAX_DEPENDENCIES: usize = 32;
 
 #[derive(sqlx::FromRow)]
 struct TaskRow {
@@ -170,6 +173,14 @@ pub async fn create_task(pool: &PgPool, auth: &AuthCtx, input: CreateInput) -> B
     if existing.is_some() {
         return Err(BusError::conflict(format!(
             "task '{key}' already exists; use get_task to inspect it"
+        )));
+    }
+
+    if input.depends_on.len() > MAX_DEPENDENCIES {
+        return Err(BusError::invalid(format!(
+            "a task declares at most {MAX_DEPENDENCIES} dependencies; got {}. \
+             Group the upstream work into fewer tasks.",
+            input.depends_on.len()
         )));
     }
 

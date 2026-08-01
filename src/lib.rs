@@ -18,6 +18,7 @@ pub mod dashboard;
 pub mod error;
 pub mod events;
 pub mod model;
+pub mod ratelimit;
 pub mod serve;
 pub mod store;
 pub mod tools;

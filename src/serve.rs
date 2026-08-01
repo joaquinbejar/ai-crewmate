@@ -1,13 +1,14 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::response::IntoResponse;
 use axum::{Router, extract::State, routing::get};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
-use tower_http::trace::TraceLayer;
+use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 
 use crate::{auth, dashboard, events::EventHub, tools::Bus, webhooks};
 
@@ -17,7 +18,18 @@ pub struct ServeOptions {
     /// is what you want behind a proxy that already validates it.
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
+    /// Largest MCP request body accepted, in bytes.
+    pub max_request_bytes: usize,
+    /// Requests per minute per token; 0 disables in-process limiting.
+    pub rate_limit_per_minute: u32,
 }
+
+/// Headroom over the largest legitimate request: a 1 MiB message body plus
+/// eight 256 KiB attachments, which base64 inflates to ~2.7 MiB, plus JSON
+/// framing. Anything beyond this is a mistake or an attack, and rejecting it
+/// before parsing keeps a bad request from costing a large allocation.
+pub const DEFAULT_MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_RATE_LIMIT_PER_MINUTE: u32 = 600;
 
 async fn health(
     State(pool): State<PgPool>,
@@ -38,6 +50,32 @@ async fn health(
             )
         }
     }
+}
+
+/// The body limit answers with a bare 413. The caller here is a language
+/// model, so replace it with a body that states the configured limit and what
+/// to do instead — an operator who raises BUS_MAX_REQUEST_BYTES should see
+/// their number, not a hard-coded one.
+async fn explain_payload_too_large(
+    limit: usize,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let resp = next.run(req).await;
+    if resp.status() != axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+        return resp;
+    }
+    (
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        axum::Json(serde_json::json!({
+            "error": format!(
+                "request body is too large; this server accepts up to {limit} bytes. \
+                 Send fewer or smaller attachments (256 KiB each, 8 per message), \
+                 or split the call into several smaller ones."
+            )
+        })),
+    )
+        .into_response()
 }
 
 pub fn build_router(pool: PgPool, opts: &ServeOptions, ct: CancellationToken) -> Router {
@@ -83,14 +121,33 @@ pub fn build_router(pool: PgPool, opts: &ServeOptions, ct: CancellationToken) ->
         config,
     );
 
+    let limiter = crate::ratelimit::RateLimiter::new(opts.rate_limit_per_minute);
+    if limiter.is_none() {
+        tracing::warn!("in-process rate limiting is disabled (BUS_RATE_LIMIT_PER_MINUTE=0)");
+    }
+    let auth_state = auth::AuthState {
+        pool: pool.clone(),
+        limiter,
+    };
+
     let mcp_routes = Router::new()
         .nest_service("/mcp", mcp)
         // Every /mcp request must carry a valid bearer token; the middleware
-        // injects the resolved AuthCtx that tool handlers read.
+        // injects the resolved AuthCtx that tool handlers read, and charges
+        // the per-token rate limit.
         .layer(axum::middleware::from_fn_with_state(
-            pool.clone(),
+            auth_state,
             auth::require_bearer,
-        ));
+        ))
+        // Runs before auth: the body is truncated at the limit rather than
+        // read whole, and no token lookup happens. This must be tower-http's
+        // layer, not axum's DefaultBodyLimit — the MCP service reads the raw
+        // body itself, so an extractor-level limit would never fire.
+        .layer(RequestBodyLimitLayer::new(opts.max_request_bytes))
+        .layer(axum::middleware::from_fn({
+            let limit = opts.max_request_bytes;
+            move |req, next| explain_payload_too_large(limit, req, next)
+        }));
 
     Router::new()
         .route("/health", get(health))

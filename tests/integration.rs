@@ -79,6 +79,10 @@ async fn setup(schema: &str) -> Option<Harness> {
             bind: String::new(),
             allowed_hosts: vec![],
             allowed_origins: vec![],
+            max_request_bytes: ai_crew_sync::serve::DEFAULT_MAX_REQUEST_BYTES,
+            // Off by default in tests: the suite hammers the server far faster
+            // than any real agent, and the limiter has its own tests.
+            rate_limit_per_minute: 0,
         },
         ct.child_token(),
     );
@@ -173,6 +177,61 @@ async fn call_expect_error(client: &Client, name: &str, args: Value) -> String {
             format!("{:?}", result.content)
         }
     }
+}
+
+/// Same harness, but with the in-process rate limiter enabled — the default
+/// setup disables it so the suite can hammer the server.
+async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
+    let url = db_url()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .after_connect({
+            let schema = schema.to_owned();
+            move |conn, _| {
+                let schema = schema.clone();
+                Box::pin(async move {
+                    sqlx::query(&format!("SET search_path TO {schema}"))
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            }
+        })
+        .connect(&url)
+        .await
+        .expect("connect");
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    MIGRATOR.run(&pool).await.expect("migrate");
+
+    let ct = CancellationToken::new();
+    let app = build_router(
+        pool.clone(),
+        &ServeOptions {
+            bind: String::new(),
+            allowed_hosts: vec![],
+            allowed_origins: vec![],
+            max_request_bytes: 64 * 1024,
+            rate_limit_per_minute: per_minute,
+        },
+        ct.child_token(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Some(Harness {
+        pool,
+        base: format!("http://{addr}"),
+        _ct: ct,
+    })
 }
 
 macro_rules! require_db {
@@ -956,6 +1015,131 @@ async fn ask_agent_returns_the_teammates_answer() {
 
     let _ = joaquin.cancel().await;
     let _ = marta.cancel().await;
+}
+
+#[tokio::test]
+async fn transport_limits_reject_oversized_and_too_frequent_requests() {
+    let h = match setup_rate_limited("t_limits", 60).await {
+        Some(h) => h,
+        None => {
+            eprintln!("skipping: TEST_DATABASE_URL not set");
+            return;
+        }
+    };
+    let token = seed_agent(&h.pool, "acme", "joaquin").await;
+    let http = reqwest::Client::new();
+    let mcp = format!("{}/mcp", h.base);
+
+    let call_body = |body: String| {
+        let http = http.clone();
+        let mcp = mcp.clone();
+        let token = token.clone();
+        async move {
+            http.post(&mcp)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .body(body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Over the 64 KiB harness limit → 413 with an actionable body, and the
+    // request never reaches the tool layer.
+    let huge = "x".repeat(200 * 1024);
+    let resp = call_body(format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"whoami","arguments":{{"pad":"{huge}"}}}}}}"#
+    ))
+    .await;
+    assert_eq!(resp.status(), 413, "oversized body is rejected");
+    let text = resp.text().await.unwrap();
+    assert!(
+        text.contains("too large") && text.contains("attachments"),
+        "413 tells the caller what to do: {text}"
+    );
+    assert!(
+        text.contains("65536"),
+        "413 states the limit this server is actually configured with: {text}"
+    );
+
+    // Burst past the bucket → 429 with Retry-After and advice.
+    let small = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}"#;
+    let mut throttled = None;
+    for _ in 0..40 {
+        let resp = call_body(small.to_owned()).await;
+        if resp.status() == 429 {
+            throttled = Some(resp);
+            break;
+        }
+    }
+    let resp = throttled.expect("a burst of 40 must exhaust a 60/min bucket");
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let text = resp.text().await.unwrap();
+    assert!(
+        retry_after.is_some(),
+        "429 carries Retry-After: headers missing"
+    );
+    assert!(
+        text.contains("rate limit") && text.contains("wait_for_updates"),
+        "429 points at the non-polling alternative: {text}"
+    );
+
+    // A different token has its own budget.
+    let other = seed_agent(&h.pool, "acme", "marta").await;
+    let resp = http
+        .post(&mcp)
+        .header("Authorization", format!("Bearer {other}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(small)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "another token is unaffected");
+}
+
+#[tokio::test]
+async fn bounded_fields_reject_oversized_values() {
+    let h = require_db!("t_bounds");
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let joaquin = connect(&h.base, &a).await;
+
+    let long = "x".repeat(300);
+    let err = call_expect_error(
+        &joaquin,
+        "create_channel",
+        json!({"name": "dev", "topic": long.clone()}),
+    )
+    .await;
+    assert!(err.contains("256"), "channel topic bounded: {err}");
+
+    let err = call_expect_error(&joaquin, "heartbeat", json!({"activity": long.clone()})).await;
+    assert!(err.contains("256"), "presence activity bounded: {err}");
+
+    let err = call_expect_error(
+        &joaquin,
+        "set_note",
+        json!({"key": "k", "value": "v", "tags": vec!["t"; 20]}),
+    )
+    .await;
+    assert!(err.contains("16"), "tag count bounded: {err}");
+
+    call(&joaquin, "create_task", json!({"key": "dep", "title": "t"})).await;
+    let err = call_expect_error(
+        &joaquin,
+        "create_task",
+        json!({"key": "many-deps", "title": "t", "depends_on": vec!["dep"; 40]}),
+    )
+    .await;
+    assert!(err.contains("32"), "dependency count bounded: {err}");
+
+    let _ = joaquin.cancel().await;
 }
 
 #[tokio::test]

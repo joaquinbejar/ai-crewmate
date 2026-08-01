@@ -11,6 +11,8 @@ use crate::{
 const MAX_LIMIT: i64 = 200;
 /// Bodies carry logs, diffs and generated reports, not just chat.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// A topic is one line describing what belongs in the channel.
+const MAX_TOPIC_BYTES: usize = 256;
 
 /// A joined message row as it comes back from Postgres.
 #[derive(sqlx::FromRow)]
@@ -82,6 +84,10 @@ pub async fn create_channel(
             "channel name is limited to 64 characters",
         ));
     }
+    let topic = match topic.as_deref() {
+        Some(t) => Some(super::check_text("channel topic", t, MAX_TOPIC_BYTES)?),
+        None => None,
+    };
 
     let row: (Uuid, String, Option<String>, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
         r#"
