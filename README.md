@@ -329,6 +329,34 @@ covered by the token limiter — `/health` takes no token), and keep read
 timeouts above 60s so `wait_for_updates` and `ask_agent` long-polls are not
 cut mid-wait.
 
+## Capacity and retention
+
+Attachments are stored in Postgres, so the database is the object store —
+plan its disk accordingly. Quotas are opt-in per team and unlimited by
+default:
+
+```bash
+ai-crew-sync team quota --team acme --bytes 1073741824   # 1 GiB of attachments
+ai-crew-sync team quota --team acme                      # clear it
+ai-crew-sync team usage --team acme                      # counts and bytes, never content
+ai-crew-sync team prune --team acme --older-than-days 90  # dry run: reports only
+ai-crew-sync team prune --team acme --older-than-days 90 --apply
+```
+
+`usage` warns at 80%. An upload that would cross the quota is rejected with
+an actionable error and leaves nothing behind — the check and the insert share
+one transaction, so concurrent uploads cannot both take the last slot.
+
+`prune` trims **history**: messages (and the attachments cascading from
+them), note revisions and task events older than the window. Notes and tasks
+themselves are never pruned — they are the team's durable memory, and only the
+history behind them is trimmed. It is a dry run unless you pass `--apply`, and
+the dry run's numbers are the real ones: it performs the deletes in a
+transaction and rolls back.
+
+Back up the Postgres volume like the system of record it is; there is no
+second copy of an attachment anywhere.
+
 ## Security
 
 - Always serve behind TLS (Caddy/nginx/Traefik) if it leaves your network.

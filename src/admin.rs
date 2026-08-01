@@ -49,6 +49,105 @@ pub async fn team_list(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn human_bytes(n: i64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Set or clear a team's attachment quota. `None` clears it (unlimited).
+pub async fn team_quota(pool: &PgPool, team: &str, bytes: Option<i64>) -> anyhow::Result<()> {
+    let id = team_id(pool, team).await?;
+    if let Some(b) = bytes
+        && b <= 0
+    {
+        anyhow::bail!("a quota must be positive; omit --bytes to clear it");
+    }
+    sqlx::query("UPDATE teams SET attachment_bytes_limit = $1 WHERE id = $2")
+        .bind(bytes)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    match bytes {
+        Some(b) => println!("team '{team}' attachment quota set to {}", human_bytes(b)),
+        None => println!("team '{team}' attachment quota cleared (unlimited)"),
+    }
+    Ok(())
+}
+
+/// Report what a team is storing. Counts and bytes only — never content, so
+/// this is safe to run for a team you are not on.
+pub async fn team_usage(pool: &PgPool, team: &str) -> anyhow::Result<()> {
+    let id = team_id(pool, team).await?;
+    let u = crate::store::quota::usage(pool, id).await?;
+
+    let quota = match u.attachment_bytes_limit {
+        Some(limit) => format!(
+            "{} of {} ({:.1}%)",
+            human_bytes(u.attachment_bytes),
+            human_bytes(limit),
+            u.percent_used().unwrap_or(0.0)
+        ),
+        None => format!("{} (no quota set)", human_bytes(u.attachment_bytes)),
+    };
+
+    println!("team '{team}'");
+    println!(
+        "  attachments     {quota} across {} file(s)",
+        u.attachment_count
+    );
+    println!("  messages        {}", u.messages);
+    println!("  note revisions  {}", u.note_revisions);
+    println!("  task events     {}", u.task_events);
+    if let Some(oldest) = u.oldest_message {
+        let days = (chrono::Utc::now() - oldest).num_days();
+        println!("  oldest message  {days} day(s) ago");
+    }
+    if let Some(pct) = u.percent_used()
+        && pct >= 80.0
+    {
+        println!();
+        println!("  ⚠ {pct:.0}% of the attachment quota is in use — raise it with");
+        println!("    `team quota --team {team} --bytes N`, or free space with `team prune`.");
+    }
+    Ok(())
+}
+
+/// Trim history older than `days`. Dry run by default at the call site.
+pub async fn team_prune(pool: &PgPool, team: &str, days: i64, apply: bool) -> anyhow::Result<()> {
+    let id = team_id(pool, team).await?;
+    let report = crate::store::quota::prune(pool, id, days, !apply).await?;
+
+    let verb = if report.dry_run {
+        "would delete"
+    } else {
+        "deleted"
+    };
+    println!("team '{team}', anything older than {days} day(s):");
+    println!("  {verb} {} message(s)", report.messages);
+    println!("  {verb} {} note revision(s)", report.note_revisions);
+    println!("  {verb} {} task event(s)", report.task_events);
+    println!(
+        "  {verb} attachments worth {}",
+        human_bytes(report.attachments_freed_bytes)
+    );
+    if report.dry_run {
+        println!();
+        println!("dry run — nothing was deleted. Re-run with --apply to do it.");
+        println!("Notes and tasks themselves are never pruned, only their history.");
+    }
+    Ok(())
+}
+
 pub async fn agent_add(
     pool: &PgPool,
     team: &str,

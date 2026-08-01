@@ -78,6 +78,8 @@ pub async fn insert_for_message(
     uploader: Uuid,
     att: &NewAttachment,
 ) -> BusResult<AttachmentMeta> {
+    super::quota::check_attachment_quota(conn, team_id, att.data.len() as i64).await?;
+
     let (id,): (i64,) = sqlx::query_as(
         r#"
         INSERT INTO attachments
@@ -130,6 +132,11 @@ pub async fn attach_to_task(
         )));
     }
 
+    // The quota check and the insert share one transaction, so two uploads
+    // racing for the last megabyte cannot both see room and both commit.
+    let mut tx = pool.begin().await?;
+    super::quota::check_attachment_quota(&mut tx, auth.team_id, att.data.len() as i64).await?;
+
     let (id,): (i64,) = sqlx::query_as(
         r#"
         INSERT INTO attachments
@@ -145,8 +152,9 @@ pub async fn attach_to_task(
     .bind(&att.content_type)
     .bind(att.data.len() as i64)
     .bind(&att.data)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(AttachmentMeta {
         id,
         filename: att.filename.clone(),

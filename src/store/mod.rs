@@ -3,6 +3,7 @@ pub mod locks;
 pub mod messaging;
 pub mod notes;
 pub mod presence;
+pub mod quota;
 pub mod tasks;
 
 pub mod attachments;

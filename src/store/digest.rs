@@ -61,15 +61,9 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
     let channels: Vec<DigestChannel> = channel_rows
         .into_iter()
         .map(|(name, message_count, tail)| DigestChannel {
-            name: name.clone(),
+            name,
             message_count,
             last_messages: serde_json::from_value::<Vec<TailRow>>(tail)
-                .inspect_err(|e| {
-                    // The digest is still useful without one channel's tail,
-                    // so this does not fail the call — but a silent empty
-                    // tail would look like a quiet channel rather than a bug.
-                    tracing::warn!(channel = %name, error = %e, "could not decode a channel tail");
-                })
                 .unwrap_or_default()
                 .into_iter()
                 .map(|r| DigestMessage {
