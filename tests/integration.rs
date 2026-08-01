@@ -1460,6 +1460,232 @@ async fn the_digest_cost_does_not_grow_with_channel_count() {
     h.shutdown().await;
 }
 
+/// Attachments are bytea in Postgres by design, so the database is the object
+/// store — and nothing bounded it. A quota has to hold under a race, stay
+/// scoped to its own team, and never expose what it is counting.
+#[tokio::test]
+async fn attachment_quotas_are_enforced_per_team() {
+    use base64::Engine;
+    let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
+
+    let h = require_db!("t_quota");
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let other = seed_agent(&h.pool, "rival", "spy").await;
+    let joaquin = connect(&h.base, &a).await;
+    let spy = connect(&h.base, &other).await;
+    call(&joaquin, "create_channel", json!({"name": "dev"})).await;
+    call(&spy, "create_channel", json!({"name": "dev"})).await;
+
+    // 300 KiB of room for acme; rival stays unlimited.
+    sqlx::query("UPDATE teams SET attachment_bytes_limit = $1 WHERE slug = 'acme'")
+        .bind(300 * 1024i64)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+
+    let file = |n: usize| json!([{"filename": "f.bin", "data_base64": b64(&vec![b'x'; n])}]);
+
+    // Two 128 KiB files fit.
+    for _ in 0..2 {
+        call(
+            &joaquin,
+            "post_message",
+            json!({"channel": "dev", "body": "chunk", "attachments": file(128 * 1024)}),
+        )
+        .await;
+    }
+
+    // The third does not, and the error says what to do about it.
+    let err = call_expect_error(
+        &joaquin,
+        "post_message",
+        json!({"channel": "dev", "body": "chunk", "attachments": file(128 * 1024)}),
+    )
+    .await;
+    assert!(err.contains("quota"), "names the problem: {err}");
+    assert!(
+        err.contains("307200") && err.contains("raise the quota"),
+        "states the limit and the way out: {err}"
+    );
+
+    // The rejection is atomic: the message did not land either.
+    let msgs = call(
+        &joaquin,
+        "read_messages",
+        json!({"scope": "dev", "only_new": false}),
+    )
+    .await;
+    assert_eq!(
+        msgs["messages"].as_array().map(Vec::len),
+        Some(2),
+        "a quota rejection must not leave the message behind: {msgs:?}"
+    );
+
+    // Another team's quota is its own business.
+    call(
+        &spy,
+        "post_message",
+        json!({"channel": "dev", "body": "unbounded", "attachments": file(200 * 1024)}),
+    )
+    .await;
+
+    // Usage counts only this team's bytes.
+    let team: (Uuid,) = sqlx::query_as("SELECT id FROM teams WHERE slug = 'acme'")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    let usage = ai_crew_sync::store::quota::usage(&h.pool, team.0)
+        .await
+        .expect("usage");
+    assert_eq!(usage.attachment_count, 2);
+    assert_eq!(usage.attachment_bytes, 256 * 1024);
+    assert_eq!(usage.attachment_bytes_limit, Some(300 * 1024));
+
+    // Racing uploads cannot both take the last slot: the check and the insert
+    // share a transaction that locks the team row.
+    sqlx::query("UPDATE teams SET attachment_bytes_limit = $1 WHERE slug = 'acme'")
+        .bind(256 * 1024i64 + 100 * 1024)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let racers: Vec<_> = (0..4)
+        .map(|_| {
+            let base = h.base.clone();
+            let token = a.clone();
+            tokio::spawn(async move {
+                let c = connect(&base, &token).await;
+                let args: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_value(json!({"channel": "dev", "body": "race",
+                           "attachments": [{"filename": "r.bin",
+                                            "data_base64": base64::engine::general_purpose::STANDARD
+                                                .encode(vec![b'y'; 90 * 1024])}]}))
+                    .unwrap();
+                let ok = c
+                    .call_tool(
+                        CallToolRequestParams::new("post_message".to_string()).with_arguments(args),
+                    )
+                    .await
+                    .map(|r| r.is_error != Some(true))
+                    .unwrap_or(false);
+                let _ = c.cancel().await;
+                ok
+            })
+        })
+        .collect();
+    let mut accepted = 0;
+    for r in racers {
+        if r.await.unwrap_or(false) {
+            accepted += 1;
+        }
+    }
+    assert_eq!(
+        accepted, 1,
+        "only one of four racing 90 KiB uploads fits in 100 KiB of room"
+    );
+
+    let usage = ai_crew_sync::store::quota::usage(&h.pool, team.0)
+        .await
+        .expect("usage");
+    assert!(
+        usage.attachment_bytes <= usage.attachment_bytes_limit.unwrap(),
+        "the quota was never exceeded: {} > {:?}",
+        usage.attachment_bytes,
+        usage.attachment_bytes_limit
+    );
+
+    let _ = joaquin.cancel().await;
+    let _ = spy.cancel().await;
+    h.shutdown().await;
+}
+
+/// Retention has to be safe to try: a dry run reports exactly what a real run
+/// would remove, and removes nothing.
+#[tokio::test]
+async fn pruning_is_dry_by_default_and_keeps_durable_state() {
+    let h = require_db!("t_prune");
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let joaquin = connect(&h.base, &a).await;
+    call(&joaquin, "create_channel", json!({"name": "dev"})).await;
+    call(
+        &joaquin,
+        "post_message",
+        json!({"channel": "dev", "body": "old"}),
+    )
+    .await;
+    call(&joaquin, "set_note", json!({"key": "k", "value": "v1"})).await;
+    call(&joaquin, "set_note", json!({"key": "k", "value": "v2"})).await;
+    call(&joaquin, "create_task", json!({"key": "t", "title": "t"})).await;
+
+    // Age everything past the window.
+    let team: (Uuid,) = sqlx::query_as("SELECT id FROM teams WHERE slug = 'acme'")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    for sql in [
+        "UPDATE messages SET created_at = now() - interval '200 days'",
+        "UPDATE note_revisions SET created_at = now() - interval '200 days'",
+        "UPDATE task_events SET created_at = now() - interval '200 days'",
+    ] {
+        sqlx::query(sql).execute(&h.pool).await.unwrap();
+    }
+
+    let dry = ai_crew_sync::store::quota::prune(&h.pool, team.0, 90, true)
+        .await
+        .expect("dry run");
+    assert!(dry.dry_run);
+    assert_eq!(dry.messages, 1, "reports what it would delete");
+
+    // Nothing actually went away.
+    let (still,): (i64,) = sqlx::query_as("SELECT count(*) FROM messages")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(still, 1, "a dry run deletes nothing");
+
+    let applied = ai_crew_sync::store::quota::prune(&h.pool, team.0, 90, false)
+        .await
+        .expect("apply");
+    assert_eq!(
+        applied.messages, dry.messages,
+        "the dry run's count was the real one"
+    );
+
+    // The durable state survives: the note keeps its current value, the task
+    // still exists. Only history was trimmed.
+    let note = call(&joaquin, "get_note", json!({"key": "k"})).await;
+    assert_eq!(
+        note["note"]["value"], "v2",
+        "notes are not pruned: {note:?}"
+    );
+    let task = call(&joaquin, "get_task", json!({"key": "t"})).await;
+    assert_eq!(task["task"]["key"], "t", "tasks are not pruned: {task:?}");
+
+    // A nonsensical window is refused rather than deleting everything.
+    let err = ai_crew_sync::store::quota::prune(&h.pool, team.0, 0, true).await;
+    assert!(err.is_err(), "older_than_days must be at least 1");
+
+    // And so is one too large to express. This is not hypothetical: the day
+    // count is bound as i32, so a value above i32::MAX used to wrap NEGATIVE,
+    // which makes `now() - make_interval(days => -N)` a FUTURE instant — so
+    // `created_at < that` matched every row and "keep almost everything"
+    // became "delete everything".
+    let err = ai_crew_sync::store::quota::prune(&h.pool, team.0, 2_147_483_648, true).await;
+    assert!(
+        err.is_err(),
+        "a day count above i32::MAX must be refused, not silently wrapped"
+    );
+
+    // The rows are still there, which is the property that actually matters.
+    let (survived,): (i64,) = sqlx::query_as("SELECT count(*) FROM notes")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(survived, 1, "a refused prune deletes nothing");
+
+    let _ = joaquin.cancel().await;
+    h.shutdown().await;
+}
+
 /// A dropped harness must not leave an axum task, a listener or a dispatcher
 /// behind: the suite runs 20+ tests in one process, and leaked listeners would
 /// keep consuming notifications for everyone else.

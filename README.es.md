@@ -331,6 +331,35 @@ aparte (no los cubre el limitador por token — `/health` no lleva token), y
 mantén los timeouts de lectura por encima de 60s para no cortar los
 long-polls de `wait_for_updates` y `ask_agent`.
 
+## Capacidad y retención
+
+Los adjuntos se guardan en Postgres, así que la base de datos es el almacén
+de objetos — dimensiona su disco en consecuencia. Las cuotas son opt-in por
+equipo e ilimitadas por defecto:
+
+```bash
+ai-crew-sync team quota --team acme --bytes 1073741824   # 1 GiB de adjuntos
+ai-crew-sync team quota --team acme                      # quitarla
+ai-crew-sync team usage --team acme                      # cuentas y bytes, nunca contenido
+ai-crew-sync team prune --team acme --older-than-days 90  # dry run: solo informa
+ai-crew-sync team prune --team acme --older-than-days 90 --apply
+```
+
+`usage` avisa al 80%. Una subida que cruzaría la cuota se rechaza con un
+error accionable y no deja nada a medias — la comprobación y el INSERT
+comparten transacción, así que dos subidas simultáneas no pueden ocupar
+ambas el último hueco.
+
+`prune` recorta **historial**: mensajes (y los adjuntos que cuelgan de
+ellos), revisiones de notas y eventos de tareas más antiguos que la ventana.
+Las notas y las tareas nunca se purgan — son la memoria durable del equipo, y
+solo se recorta el historial de detrás. Es dry run salvo que pases `--apply`,
+y los números del dry run son los de verdad: ejecuta los DELETE en una
+transacción y hace rollback.
+
+Respalda el volumen de Postgres como el sistema de registro que es; no hay
+una segunda copia de un adjunto en ningún sitio.
+
 ## Seguridad
 
 - Sirve siempre detrás de TLS (Caddy/nginx/Traefik) si sale de tu red.

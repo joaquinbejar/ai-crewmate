@@ -96,6 +96,29 @@ struct ServeArgs {
 
 #[derive(Subcommand)]
 enum TeamCmd {
+    /// Set or clear a team's attachment storage quota.
+    Quota {
+        #[arg(long)]
+        team: String,
+        /// Total attachment bytes allowed. Omit to clear (unlimited).
+        #[arg(long)]
+        bytes: Option<i64>,
+    },
+    /// Report what a team is storing (counts and bytes; never content).
+    Usage {
+        #[arg(long)]
+        team: String,
+    },
+    /// Trim history older than N days. Dry run unless --apply is passed.
+    Prune {
+        #[arg(long)]
+        team: String,
+        #[arg(long, default_value_t = 90)]
+        older_than_days: i64,
+        /// Actually delete. Without this the command only reports.
+        #[arg(long)]
+        apply: bool,
+    },
     Create {
         #[arg(long)]
         slug: String,
@@ -269,6 +292,13 @@ async fn main() -> anyhow::Result<()> {
         Command::Team(cmd) => match cmd {
             TeamCmd::Create { slug, name } => admin::team_create(&pool, &slug, name).await?,
             TeamCmd::List => admin::team_list(&pool).await?,
+            TeamCmd::Quota { team, bytes } => admin::team_quota(&pool, &team, bytes).await?,
+            TeamCmd::Usage { team } => admin::team_usage(&pool, &team).await?,
+            TeamCmd::Prune {
+                team,
+                older_than_days,
+                apply,
+            } => admin::team_prune(&pool, &team, older_than_days, apply).await?,
         },
 
         Command::Agent(cmd) => match cmd {
