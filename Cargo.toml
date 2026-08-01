@@ -30,13 +30,11 @@ rmcp = { version = "3.0", features = [
 schemars = "1"
 
 axum = "0.8"
-tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 http = "1"
 
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-futures = "0.3"
 
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
@@ -66,13 +64,16 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
-subtle = "2"
 
-# outgoing webhooks (same TLS stack rmcp's client already pulls in)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Outgoing webhooks. Kept on the same major as the reqwest rmcp resolves,
+# so the binary carries one HTTP client and one TLS stack, not two.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+# Mirrors the normal dependency exactly: Cargo unifies features across the
+# graph, so letting the dev entry pull defaults could re-enable a second TLS
+# backend in test builds.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 base64 = "0.22"
 
 [profile.release]
