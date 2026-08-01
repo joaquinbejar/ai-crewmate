@@ -203,9 +203,7 @@ pub async fn render(State(state): State<DashboardState>, headers: HeaderMap) -> 
     // from the team alone, never from an agent identity.
     let auth = AuthCtx {
         agent_id: uuid::Uuid::nil(),
-        // A grant proves team membership and nothing more, so there is no
-        // agent to name. Say that, rather than rendering an empty viewer.
-        agent_name: "read-only session".into(),
+        agent_name: String::new(),
         team_id,
         team_slug: String::new(),
     };
