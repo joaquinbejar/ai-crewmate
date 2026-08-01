@@ -9,7 +9,8 @@ use crate::{
 };
 
 const MAX_LIMIT: i64 = 200;
-const MAX_BODY_BYTES: usize = 64 * 1024;
+/// Bodies carry logs, diffs and generated reports, not just chat.
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// A joined message row as it comes back from Postgres.
 #[derive(sqlx::FromRow)]
@@ -159,7 +160,9 @@ pub async fn post_message(
     }
     if body.len() > MAX_BODY_BYTES {
         return Err(BusError::invalid(format!(
-            "message body is limited to {MAX_BODY_BYTES} bytes"
+            "message body is {} bytes; the limit is {MAX_BODY_BYTES}. \
+             Attach the file instead of pasting it, or split the message.",
+            body.len()
         )));
     }
 

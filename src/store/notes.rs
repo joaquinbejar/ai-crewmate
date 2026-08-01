@@ -7,7 +7,9 @@ use crate::{
     model::{Ack, NoteInfo, NoteList, NoteRef, ts},
 };
 
-const MAX_VALUE_BYTES: usize = 256 * 1024;
+/// A note is the team's durable memory: runbooks and decision records
+/// belong here whole, not truncated.
+const MAX_VALUE_BYTES: usize = 1024 * 1024;
 const MAX_LIMIT: i64 = 200;
 
 #[derive(sqlx::FromRow)]
@@ -61,7 +63,8 @@ pub async fn set_note(pool: &PgPool, auth: &AuthCtx, input: SetInput) -> BusResu
     }
     if input.value.len() > MAX_VALUE_BYTES {
         return Err(BusError::invalid(format!(
-            "note value is limited to {MAX_VALUE_BYTES} bytes"
+            "note value is {} bytes; the limit is {MAX_VALUE_BYTES}",
+            input.value.len()
         )));
     }
     let tags: Vec<String> = input

@@ -44,7 +44,8 @@ pub struct PostMessageArgs {
     /// Agent handle to send a direct message to. Mutually exclusive with `channel`.
     #[serde(default)]
     pub to: Option<String>,
-    /// The message text. Keep it short and factual; teammates' agents read this.
+    /// The message text. Keep it short and factual; teammates' agents read
+    /// this. Hard limit 1 MiB — attach a file rather than pasting a huge log.
     pub body: String,
     /// Id of the message this replies to, to keep a thread together.
     #[serde(default)]
