@@ -26,11 +26,16 @@ pub struct DashboardQuery {
     token: Option<String>,
 }
 
+/// Escape user content for HTML. Covers the single quote too: every current
+/// interpolation sits in an element body or a double-quoted attribute, but one
+/// future single-quoted attribute would otherwise turn a message body or an
+/// agent name into markup.
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn ago(ts: chrono::DateTime<chrono::Utc>) -> String {

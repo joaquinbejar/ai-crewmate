@@ -1350,7 +1350,7 @@ async fn dashboard_requires_a_token_and_renders_team_state() {
     call(
         &joaquin,
         "post_message",
-        json!({"channel": "dev", "body": "<script>alert(1)</script> hola"}),
+        json!({"channel": "dev", "body": "<script>alert(1)</script> it's here"}),
     )
     .await;
 
@@ -1385,6 +1385,12 @@ async fn dashboard_requires_a_token_and_renders_team_state() {
         "message bodies must be HTML-escaped"
     );
     assert!(body.contains("&lt;script&gt;"), "escaped form present");
+    assert!(
+        !body.contains("it's here"),
+        "single quotes must be escaped too: a single-quoted attribute would \
+         otherwise let user content break out"
+    );
+    assert!(body.contains("it&#39;s here"), "escaped quote present");
 
     let _ = joaquin.cancel().await;
 }
