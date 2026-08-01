@@ -3,197 +3,218 @@
 //! opening anything.
 //!
 //! Privacy rule: direct messages are NEVER forwarded, only channel messages
-//! and team-wide events (tasks, locks, notes).
+//! and team-wide events (tasks, locks, notes). That guard lives in the
+//! database trigger that enqueues deliveries — the only place one can be
+//! created — rather than in each consumer.
+//!
+//! Delivery is an outbox, not a fan-out from the event stream. A trigger
+//! enqueues one row per (event, matching webhook) when the change commits,
+//! which happens once however many replicas are running; each replica then
+//! claims rows with `FOR UPDATE SKIP LOCKED`, the same primitive task claims
+//! use. The guarantee is **at-least-once** with bounded retries: a receiver
+//! that 500s or times out is retried with backoff, and a receiver that keeps
+//! failing is parked as `failed` for an operator to see, never silently
+//! dropped.
+
+use std::time::Duration;
 
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::events::{BusEvent, EventHub};
+use crate::events::EventHub;
+
+/// Attempts before a delivery is parked as permanently failed.
+const MAX_ATTEMPTS: i32 = 6;
+/// How many deliveries one replica claims per round.
+const BATCH: i64 = 32;
+/// In-flight POSTs per replica. Bounded so one slow receiver cannot starve
+/// the others, and so a burst cannot open unbounded sockets.
+const CONCURRENCY: usize = 8;
+/// Backstop poll when no notification arrives — also what makes retries due.
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How often retention runs, measured in elapsed time rather than in idle
+/// rounds — a busy dispatcher has more to prune, not less.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(600);
+/// Successful deliveries are evidence for a while, then noise.
+const KEEP_SENT: Duration = Duration::from_secs(24 * 3600);
+/// Failures stay long enough for someone to notice and investigate.
+const KEEP_FAILED: Duration = Duration::from_secs(7 * 24 * 3600);
 
 #[derive(sqlx::FromRow)]
-struct WebhookRow {
+struct Delivery {
+    id: i64,
     url: String,
     kind: String,
-    channel_filter: Option<String>,
+    summary: String,
+    payload: serde_json::Value,
+    attempts: i32,
 }
 
-/// Human-readable line for an event, resolving ids to names. Returns `None`
-/// for events that should not be forwarded (DMs, unknown kinds).
-async fn render_event(
-    pool: &PgPool,
-    event: &BusEvent,
-) -> Option<(String, serde_json::Value, Option<String>)> {
-    match event.kind() {
-        "message" => {
-            if event.is_direct_message() {
-                return None; // never forward DMs
-            }
-            let id = event.message_id()?;
-            let row: (String, String, String) = sqlx::query_as(
-                r#"
-                SELECT s.name, ch.name, left(m.body, 500)
-                FROM messages m
-                JOIN agents s ON s.id = m.sender_agent_id
-                JOIN channels ch ON ch.id = m.channel_id
-                WHERE m.id = $1
-                "#,
-            )
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .ok()??;
-            let (sender, channel, body) = row;
-            let text = format!("💬 #{channel} · {sender}: {body}");
-            let raw = serde_json::json!({
-                "kind": "message", "channel": channel, "from": sender, "body": body,
-            });
-            Some((text, raw, Some(channel)))
-        }
-        "task" => {
-            let key = event.0.get("key").and_then(|v| v.as_str())?;
-            let status = event
-                .0
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let holder = match event.0.get("claimed_by").and_then(|v| v.as_str()) {
-                Some(uuid) => {
-                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
-                        .bind(uuid)
-                        .fetch_optional(pool)
-                        .await
-                        .ok()
-                        .flatten()
-                }
-                None => None,
-            };
-            let icon = match status {
-                "done" => "✅",
-                "claimed" => "🔧",
-                "cancelled" => "🚫",
-                _ => "🗒️",
-            };
-            let who = holder
-                .as_ref()
-                .map(|h| format!(" ({h})"))
-                .unwrap_or_default();
-            let text = format!("{icon} task `{key}` → {status}{who}");
-            let raw = serde_json::json!({
-                "kind": "task", "key": key, "status": status, "claimed_by": holder,
-            });
-            Some((text, raw, None))
-        }
-        "lock" => {
-            let name = event.0.get("name").and_then(|v| v.as_str())?;
-            let what = event
-                .0
-                .get("event")
-                .and_then(|v| v.as_str())
-                .unwrap_or("changed");
-            let holder = match event.0.get("holder_agent_id").and_then(|v| v.as_str()) {
-                Some(uuid) => {
-                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
-                        .bind(uuid)
-                        .fetch_optional(pool)
-                        .await
-                        .ok()
-                        .flatten()
-                }
-                None => None,
-            };
-            let who = holder.map(|h| format!(" by {h}")).unwrap_or_default();
-            let text = format!("🔒 lock `{name}` {what}{who}");
-            let raw = serde_json::json!({ "kind": "lock", "name": name, "event": what });
-            Some((text, raw, None))
-        }
-        "note" => {
-            let scope = event
-                .0
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .unwrap_or("global");
-            let key = event.0.get("key").and_then(|v| v.as_str())?;
-            let by = match event.0.get("updated_by").and_then(|v| v.as_str()) {
-                Some(uuid) => {
-                    sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1::uuid")
-                        .bind(uuid)
-                        .fetch_optional(pool)
-                        .await
-                        .ok()
-                        .flatten()
-                }
-                None => None,
-            };
-            let who = by.map(|h| format!(" by {h}")).unwrap_or_default();
-            let text = format!("📝 note `{scope}/{key}` updated{who}");
-            let raw = serde_json::json!({ "kind": "note", "scope": scope, "key": key });
-            Some((text, raw, None))
-        }
-        _ => None,
-    }
-}
-
-async fn dispatch(pool: &PgPool, http: &reqwest::Client, event: &BusEvent) {
-    let Some(team_id) = event.team_id() else {
-        return;
-    };
-    let kind = event.kind().to_owned();
-
-    let hooks: Vec<WebhookRow> = match sqlx::query_as(
+/// Claim a batch of due deliveries for this replica.
+///
+/// `FOR UPDATE SKIP LOCKED` is what makes N replicas safe: two dispatchers
+/// racing for the same row means one of them takes it and the other moves on,
+/// rather than both sending it.
+async fn claim(pool: &PgPool) -> Result<Vec<Delivery>, sqlx::Error> {
+    sqlx::query_as(
         r#"
-        SELECT url, kind, channel_filter
-        FROM webhooks
-        WHERE team_id = $1 AND enabled AND $2 = ANY(events)
+        WITH due AS (
+            SELECT d.id
+            FROM webhook_deliveries d
+            WHERE d.status = 'pending' AND d.next_attempt_at <= now()
+            ORDER BY d.next_attempt_at, d.id
+            FOR UPDATE SKIP LOCKED
+            LIMIT $1
+        )
+        UPDATE webhook_deliveries d
+        SET attempts = d.attempts + 1,
+            -- Hold the row for the duration of the attempt: if this replica
+            -- dies mid-POST, the row becomes due again instead of vanishing.
+            next_attempt_at = now() + interval '60 seconds',
+            updated_at = now()
+        FROM due, webhooks w
+        WHERE d.id = due.id AND w.id = d.webhook_id
+        RETURNING d.id, w.url, w.kind, d.summary, d.payload, d.attempts
         "#,
     )
-    .bind(team_id)
-    .bind(&kind)
+    .bind(BATCH)
     .fetch_all(pool)
     .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(error = %e, "webhook lookup failed");
-            return;
-        }
-    };
-    if hooks.is_empty() {
-        return;
+}
+
+/// Slack and Discord want their own envelope; everything else gets the event.
+fn body_for(kind: &str, summary: &str, payload: &serde_json::Value) -> serde_json::Value {
+    match kind {
+        "slack" => serde_json::json!({ "text": summary }),
+        "discord" => serde_json::json!({ "content": summary }),
+        _ => payload.clone(),
     }
+}
 
-    let Some((text, raw, channel)) = render_event(pool, event).await else {
-        return;
-    };
+async fn mark_sent(pool: &PgPool, id: i64) {
+    // Losing this UPDATE means a delivered webhook is sent again later. That
+    // is survivable — the guarantee is at-least-once — but an operator
+    // debugging duplicates needs to see it.
+    if let Err(e) = sqlx::query(
+        "UPDATE webhook_deliveries SET status = 'sent', last_error = NULL, updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(delivery = id, error = %e, "could not record a successful delivery");
+    }
+}
 
-    for hook in hooks {
-        // Channel filter only constrains message events.
-        if kind == "message"
-            && let (Some(filter), Some(chan)) = (&hook.channel_filter, &channel)
-            && filter != chan
-        {
-            continue;
+/// Record a failed attempt: schedule a retry with exponential backoff, or park
+/// the delivery once it has used its attempts.
+async fn mark_failed(pool: &PgPool, id: i64, attempts: i32, error: &str) {
+    // 2s, 4s, 8s … capped, so a receiver that is down for a minute is retried
+    // a handful of times rather than hammered.
+    let backoff = 2i64.saturating_pow(attempts.clamp(1, 8) as u32).min(600);
+    let terminal = attempts >= MAX_ATTEMPTS;
+    if terminal {
+        tracing::warn!(
+            delivery = id,
+            attempts,
+            error,
+            "webhook delivery permanently failed"
+        );
+    }
+    let recorded = sqlx::query(
+        r#"
+        UPDATE webhook_deliveries
+        SET status = CASE WHEN $2 THEN 'failed' ELSE 'pending' END,
+            next_attempt_at = now() + make_interval(secs => $3),
+            last_error = left($4, 500),
+            updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(terminal)
+    .bind(backoff as f64)
+    .bind(error)
+    .execute(pool)
+    .await;
+    if let Err(e) = recorded {
+        // The row keeps the 60s hold from claim() and becomes due again, so
+        // nothing is lost — but without this line the retry schedule looks
+        // inexplicable.
+        tracing::warn!(delivery = id, error = %e, "could not record a failed delivery");
+    }
+}
+
+/// Send one batch, bounded to `CONCURRENCY` in-flight requests.
+async fn send_batch(pool: &PgPool, http: &reqwest::Client, batch: Vec<Delivery>) {
+    let mut queue = batch.into_iter();
+    let mut running = tokio::task::JoinSet::new();
+
+    loop {
+        while running.len() < CONCURRENCY {
+            let Some(d) = queue.next() else { break };
+            let http = http.clone();
+            let pool = pool.clone();
+            running.spawn(async move {
+                let body = body_for(&d.kind, &d.summary, &d.payload);
+                match http.post(&d.url).json(&body).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        // Drain before dropping: hyper only reuses a
+                        // connection whose body was consumed, and a webhook
+                        // dispatcher talks to the same few hosts all day.
+                        let _ = resp.bytes().await;
+                        mark_sent(&pool, d.id).await;
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        // 4xx other than 408/429 will not improve on retry;
+                        // spend the attempts on things that might.
+                        let permanent = status.is_client_error()
+                            && status != reqwest::StatusCode::REQUEST_TIMEOUT
+                            && status != reqwest::StatusCode::TOO_MANY_REQUESTS;
+                        let attempts = if permanent { MAX_ATTEMPTS } else { d.attempts };
+                        let _ = resp.bytes().await;
+                        mark_failed(&pool, d.id, attempts, &format!("HTTP {status}")).await;
+                    }
+                    Err(e) => mark_failed(&pool, d.id, d.attempts, &e.to_string()).await,
+                }
+            });
         }
-        let payload = match hook.kind.as_str() {
-            "slack" => serde_json::json!({ "text": text }),
-            "discord" => serde_json::json!({ "content": text }),
-            _ => raw.clone(),
-        };
-        let url = hook.url.clone();
-        match http.post(&url).json(&payload).send().await {
-            Ok(resp) if !resp.status().is_success() => {
-                tracing::warn!(url = %url, status = %resp.status(), "webhook rejected");
-            }
-            Err(e) => tracing::warn!(url = %url, error = %e, "webhook delivery failed"),
-            _ => {}
+        match running.join_next().await {
+            None => break,
+            Some(Ok(())) => {}
+            // A delivery task should never panic; if one does, the row stays
+            // pending and retries forever with no clue why. Say so.
+            Some(Err(e)) => tracing::error!(error = %e, "webhook delivery task failed"),
         }
     }
 }
 
-/// Consume the event hub and forward matching events until cancelled.
+/// Drop deliveries nobody will look at again.
+async fn prune(pool: &PgPool) {
+    let _ = sqlx::query(
+        r#"
+        DELETE FROM webhook_deliveries
+        WHERE (status = 'sent'   AND updated_at < now() - make_interval(secs => $1))
+           OR (status = 'failed' AND updated_at < now() - make_interval(secs => $2))
+        "#,
+    )
+    .bind(KEEP_SENT.as_secs() as f64)
+    .bind(KEEP_FAILED.as_secs() as f64)
+    .execute(pool)
+    .await;
+}
+
+/// Claim, send and retire deliveries until cancelled.
+///
+/// Woken by the in-process event hub (any bus event may have enqueued work)
+/// and by the poll interval, which is also what makes a backed-off retry due.
+/// A missed notification therefore costs latency, never a delivery.
 pub async fn run_dispatcher(pool: PgPool, hub: EventHub, ct: CancellationToken) {
     let http = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(Duration::from_secs(5))
         .build()
     {
         Ok(c) => c,
@@ -203,15 +224,37 @@ pub async fn run_dispatcher(pool: PgPool, hub: EventHub, ct: CancellationToken) 
         }
     };
     let mut rx = hub.subscribe();
+
+    let mut last_prune = tokio::time::Instant::now();
+
     loop {
+        // Retention runs on elapsed time, not on idle rounds. Counting rounds
+        // meant a dispatcher that always found work never pruned at all —
+        // exactly the deployment where the table grows fastest.
+        if last_prune.elapsed() >= PRUNE_INTERVAL {
+            last_prune = tokio::time::Instant::now();
+            prune(&pool).await;
+        }
+
+        match claim(&pool).await {
+            Ok(batch) if !batch.is_empty() => {
+                send_batch(&pool, &http, batch).await;
+                continue; // there may be more due right now
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "claiming webhook deliveries failed"),
+        }
+
+        // Idle: wait for an event or the poll interval, whichever comes first.
         tokio::select! {
             _ = ct.cancelled() => return,
-            recv = rx.recv() => match recv {
-                Ok(event) => dispatch(&pool, &http, &event).await,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(missed = n, "webhook dispatcher lagged; some events not forwarded");
+            _ = tokio::time::sleep(POLL_INTERVAL) => {}
+            recv = rx.recv() => {
+                if matches!(recv, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                    return;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                // Lagging is harmless now: the work is in the outbox, and the
+                // next claim finds it regardless of what the stream missed.
             }
         }
     }

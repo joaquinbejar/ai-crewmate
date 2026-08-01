@@ -211,8 +211,16 @@ ai-crew-sync webhook list --team acme
 ai-crew-sync webhook remove --id <uuid>
 ```
 
-The dispatcher runs inside `serve` (it listens to Postgres LISTEN/NOTIFY
-events); there is nothing else to deploy.
+Delivery is **at-least-once and replica-safe**. A database trigger enqueues
+one row per (event, matching webhook) when the change commits — once, however
+many replicas are running — and each replica claims work with
+`FOR UPDATE SKIP LOCKED`. A receiver that times out or 500s is retried with
+exponential backoff up to six attempts; one that keeps failing is parked as
+`failed` in `webhook_deliveries` with its last error, for an operator to find.
+A 4xx other than 408/429 is treated as permanent and not retried. Sent rows
+are pruned after a day, failed ones after a week.
+
+The dispatcher runs inside `serve`; there is nothing else to deploy.
 
 ## Development
 
