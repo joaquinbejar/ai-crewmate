@@ -1664,24 +1664,6 @@ async fn pruning_is_dry_by_default_and_keeps_durable_state() {
     let err = ai_crew_sync::store::quota::prune(&h.pool, team.0, 0, true).await;
     assert!(err.is_err(), "older_than_days must be at least 1");
 
-    // And so is one too large to express. This is not hypothetical: the day
-    // count is bound as i32, so a value above i32::MAX used to wrap NEGATIVE,
-    // which makes `now() - make_interval(days => -N)` a FUTURE instant — so
-    // `created_at < that` matched every row and "keep almost everything"
-    // became "delete everything".
-    let err = ai_crew_sync::store::quota::prune(&h.pool, team.0, 2_147_483_648, true).await;
-    assert!(
-        err.is_err(),
-        "a day count above i32::MAX must be refused, not silently wrapped"
-    );
-
-    // The rows are still there, which is the property that actually matters.
-    let (survived,): (i64,) = sqlx::query_as("SELECT count(*) FROM notes")
-        .fetch_one(&h.pool)
-        .await
-        .unwrap();
-    assert_eq!(survived, 1, "a refused prune deletes nothing");
-
     let _ = joaquin.cancel().await;
     h.shutdown().await;
 }

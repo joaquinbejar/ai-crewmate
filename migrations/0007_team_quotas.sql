@@ -18,7 +18,5 @@ COMMENT ON COLUMN teams.attachment_bytes_limit IS
 -- to be an index-only lookup rather than a scan of the payloads.
 CREATE INDEX attachments_team_size_idx ON attachments (team_id) INCLUDE (size_bytes);
 
--- Retention prunes by team AND age, so the index has to lead with team_id to
--- be usable; an index on created_at alone would be low-selectivity here and
--- would still cost a write on every message.
-CREATE INDEX messages_team_age_idx ON messages (team_id, created_at);
+-- Retention prunes by age; without this the sweep scans every message.
+CREATE INDEX messages_created_idx ON messages (created_at);

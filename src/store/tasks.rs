@@ -13,8 +13,10 @@ const MAX_LIMIT: i64 = 200;
 
 /// A title is a handle a human recognises in a list, not a description.
 const MAX_TITLE_BYTES: usize = 512;
-/// Descriptions and results carry context; the body-sized budget is the same
-/// one messages get, because that is what an agent tends to paste into both.
+/// Descriptions and results carry context, but a task is an index entry, not
+/// a document: 64 KiB is generous for both and deliberately smaller than the
+/// 1 MiB a message body allows. A payload larger than this belongs in an
+/// attachment on the task.
 const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
 const MAX_RESULT_BYTES: usize = 64 * 1024;
 /// A pipeline with more upstream tasks than this wants restructuring, and an
