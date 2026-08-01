@@ -1,0 +1,67 @@
+# Works with plain compose and with Docker Swarm:
+#
+#   docker compose -f Docker/docker-compose.yml up -d
+#   docker stack deploy -c Docker/docker-compose.yml crew
+#
+# Every variable has a default; override from the environment (or Docker/.env
+# under plain compose — Swarm does not read .env, export them or use
+# `env $(cat Docker/.env) docker stack deploy ...`). Change POSTGRES_PASSWORD
+# for anything reachable from outside your machine.
+#
+# The compose project name comes from COMPOSE_PROJECT_NAME in Docker/.env
+# (a top-level `name:` here would break `docker stack deploy`, which rejects
+# the property; Swarm names the stack from the CLI argument instead).
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:18.4-alpine3.24}
+    environment:
+      POSTGRES_USER: bus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: bus
+    volumes:
+      # postgres:18+ expects the mount at /var/lib/postgresql (data lives in a
+      # versioned subdir), which keeps future pg_upgrade --link possible.
+      - bus-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bus -d bus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 3s
+
+  bus:
+    # Published multi-arch image. To run from source instead:
+    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+    image: ghcr.io/joaquinbejar/ai-crew-sync:${BUS_VERSION:-latest}
+    # For a public deployment put a TLS proxy (Caddy, nginx, Traefik) in front
+    # and set BUS_ALLOWED_HOSTS to your real hostname.
+    environment:
+      DATABASE_URL: postgres://bus:${POSTGRES_PASSWORD:-change-me}@db:5432/bus
+      BUS_BIND: 0.0.0.0:8787
+      BUS_ALLOWED_HOSTS: ${BUS_ALLOWED_HOSTS:-*}
+      RUST_LOG: ${RUST_LOG:-ai_crew_sync=info}
+    ports:
+      - "${BUS_PORT:-8787}:8787"
+    # Short-form only: Swarm rejects the condition syntax. If the bus starts
+    # before the database is ready it exits, and restart (compose) or
+    # restart_policy (Swarm) retries until the stack converges.
+    depends_on:
+      - db
+    restart: on-failure
+    deploy:
+      # Stateless (no sessions, identity per request): scale replicas freely
+      # behind the routing mesh. Concurrent startup migrations are safe —
+      # sqlx takes a Postgres advisory lock.
+      replicas: ${BUS_REPLICAS:-1}
+      restart_policy:
+        condition: on-failure
+        delay: 3s
+      update_config:
+        order: start-first
+
+volumes:
+  bus-data:

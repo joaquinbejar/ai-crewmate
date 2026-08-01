@@ -1,0 +1,10 @@
+# Development override: build the bus from this checkout instead of pulling
+# the published image.
+#
+#   docker compose -f Docker/docker-compose.yml -f Docker/docker-compose.dev.yml up -d --build
+services:
+  bus:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile
+    image: ai-crew-sync:dev
