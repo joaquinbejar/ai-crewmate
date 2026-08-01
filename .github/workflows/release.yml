@@ -261,7 +261,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: os-packages
+          # Shares the prefix the publish job filters on. Named 'os-packages'
+          # it silently fell outside the pattern, and the release shipped
+          # tarballs with no .deb or .rpm while every job reported success.
+          name: ai-crew-sync-os-packages
           path: dist/*
           retention-days: 1
 
@@ -292,6 +295,18 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" --generate-notes --latest
           fi
+
+          # Assert the set is complete before uploading. The previous version
+          # happily published eight tarballs and no packages, and every job
+          # went green — a partial release is worse than a failed one, because
+          # nobody goes looking.
+          for want in '*.tar.gz' '*.sha256' '*.deb' '*.rpm'; do
+            n=$(find dl -type f -name "$want" | wc -l)
+            echo "  $want: $n"
+            [ "$n" -gt 0 ] || { echo "no $want among the artifacts — refusing to publish a partial release"; exit 1; }
+          done
+          [ "$(find dl -type f -name '*.deb' | wc -l)" -ge 2 ] || { echo "expected both architectures of .deb"; exit 1; }
+          [ "$(find dl -type f -name '*.rpm' | wc -l)" -ge 2 ] || { echo "expected both architectures of .rpm"; exit 1; }
 
           find dl -type f \( -name '*.tar.gz' -o -name '*.sha256' \
                               -o -name '*.deb' -o -name '*.rpm' \) -print0 \
