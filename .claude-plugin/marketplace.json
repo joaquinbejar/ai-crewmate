@@ -3,7 +3,7 @@
   "owner": {
     "name": "Joaquin Bejar"
   },
-  "description": "Coordination bus for a team of Claude Code agents: shared messaging, task claims, presence, notes, locks and real-time wakeups over one MCP server backed by Postgres.",
+  "description": "Coordination bus for a team of AI coding agents (Claude Code, Codex, Cursor or any MCP client): shared messaging, task claims, presence, notes, locks and real-time wakeups over one MCP server backed by Postgres.",
   "plugins": [
     {
       "name": "ai-crew-sync",

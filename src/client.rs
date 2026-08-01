@@ -1,7 +1,7 @@
 //! Console client: everything the MCP tools can do, from a human terminal.
 //!
 //! Connects to the bus over the same Streamable HTTP transport and the same
-//! bearer token a Claude Code instance would use, so a human on the shell is
+//! bearer token a coding agent would use, so a human on the shell is
 //! just another agent on the bus:
 //!
 //! ```text

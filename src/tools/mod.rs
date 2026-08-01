@@ -24,7 +24,7 @@ use crate::{
 };
 
 pub const INSTRUCTIONS: &str = r#"
-Shared coordination bus for a team of Claude Code agents. Every agent in the
+Shared coordination bus for a team of AI coding agents. Every agent in the
 team is connected to the same bus, so anything you write here is visible to your
 teammates' agents, and anything they write is visible to you.
 

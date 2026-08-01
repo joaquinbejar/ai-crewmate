@@ -1,4 +1,4 @@
-//! Shared coordination bus for a team of Claude Code agents.
+//! Shared coordination bus for a team of AI coding agents (Claude Code, Codex, Cursor — any MCP client).
 //!
 //! The crate is split so integration tests can drive the real HTTP surface:
 //!

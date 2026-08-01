@@ -5,9 +5,10 @@
 
 *Read this in [English](README.md).*
 
-Servidor MCP en Rust que hace de **bus de coordinación entre los Claude Code de
-un equipo**, con todo el estado en Postgres. Cada instancia de Claude Code (la
-tuya, la de cada compañero) se conecta con su propio token y puede:
+Servidor MCP en Rust que hace de **bus de coordinación entre los agentes de
+código IA de un equipo** — Claude Code, Codex, Cursor, Kimi o cualquier otro
+que hable MCP sobre Streamable HTTP — con todo el estado en Postgres. Cada
+agente (el tuyo, el de cada compañero) se conecta con su propio token y puede:
 
 | Capacidad | Herramientas MCP |
 |---|---|
@@ -76,9 +77,14 @@ si alguien usa varias máquinas. El token se enseña **una sola vez**.
 Gestión posterior: `agent list`, `agent disable`, `token issue`, `token list`,
 `token revoke`.
 
-## Conectar cada Claude Code
+## Conectar cada agente
 
-### Opción A (recomendada): plugin
+Vale cualquier cliente MCP: el bus es Streamable HTTP estándar con token
+Bearer. Claude Code tiene plugin listo (opción A); cualquier otro agente —
+Codex, Cursor, Kimi, Zed, un script — usa la configuración MCP estándar de la
+opción B.
+
+### Opción A (Claude Code): plugin
 
 Este repo es también un *marketplace* de plugins de Claude Code. Cada compañero
 ejecuta, dentro de Claude Code:
@@ -111,11 +117,12 @@ El plugin trae todo preconfigurado:
 
 Los hooks solo necesitan `curl` y `python3` en el PATH.
 
-### Opción B: configuración manual
+### Opción B (cualquier cliente MCP): configuración manual
 
-Cada compañero añade esto a su `~/.claude.json` (ámbito usuario) o el equipo lo
-commitea como `.mcp.json` en la raíz del repo leyendo el token de una variable
-de entorno (ver `examples/.mcp.json`):
+Entrada MCP estándar — en Claude Code va en `~/.claude.json` (ámbito usuario)
+o en un `.mcp.json` commiteado en la raíz del repo (ver `examples/.mcp.json`);
+en Cursor, Codex, Kimi o cualquier otro agente con MCP, su fichero de
+configuración equivalente. El token se lee de una variable de entorno:
 
 ```json
 {
@@ -135,9 +142,10 @@ También puedes generar el bloque con:
 ai-crew-sync mcp-config --url https://bus.tu-empresa.com/mcp --token acs_...
 ```
 
-Con eso, cada Claude Code ve las herramientas del bus y las usa solo. Para que
-las use *bien*, añade las convenciones del equipo al `CLAUDE.md` del repo — hay
-un snippet listo en `examples/CLAUDE.md-snippet.md`.
+Con eso, cada agente ve las herramientas del bus y las usa solo. Para que las
+use *bien*, añade las convenciones del equipo al fichero de instrucciones del
+repo (`CLAUDE.md`, `AGENTS.md` o equivalente) — hay un snippet listo en
+`examples/CLAUDE.md-snippet.md`.
 
 ## Cliente de consola
 

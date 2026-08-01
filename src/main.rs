@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[command(
     name = "ai-crew-sync",
     version,
-    about = "MCP coordination bus for a team of Claude Code agents, backed by Postgres"
+    about = "MCP coordination bus for a team of AI coding agents, backed by Postgres"
 )]
 struct Cli {
     /// Postgres connection string.
@@ -28,7 +28,7 @@ enum Command {
     /// Manage teams.
     #[command(subcommand)]
     Team(TeamCmd),
-    /// Manage agents (one per Claude Code instance).
+    /// Manage agents (one per teammate's coding agent).
     #[command(subcommand)]
     Agent(AgentCmd),
     /// Manage bearer tokens.

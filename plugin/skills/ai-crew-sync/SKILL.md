@@ -1,11 +1,11 @@
 ---
 name: ai-crew-sync
-description: Conventions for coordinating with teammates' Claude Code agents over the team bus MCP server. Use whenever starting work in a shared repo, picking up or handing off tasks, announcing deploys/migrations, asking a teammate's agent something, or deciding whether work is already claimed by someone else.
+description: Conventions for coordinating with teammates' AI coding agents over the team bus MCP server. Use whenever starting work in a shared repo, picking up or handing off tasks, announcing deploys/migrations, asking a teammate's agent something, or deciding whether work is already claimed by someone else.
 ---
 
 # Working on a team bus
 
-This machine is connected to a shared coordination bus (MCP server `ai-crew-sync`) used by every teammate's Claude Code. Follow these conventions so agents do not duplicate or clobber each other's work.
+This machine is connected to a shared coordination bus (MCP server `ai-crew-sync`) used by every teammate's coding agent (Claude Code, Codex, Cursor or any other MCP client). Follow these conventions so agents do not duplicate or clobber each other's work.
 
 ## Before starting shared work
 1. `whoami` → confirm identity, unread DMs, and tasks you already claimed.

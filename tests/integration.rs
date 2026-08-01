@@ -1,7 +1,7 @@
 //! End-to-end tests against a real Postgres and the real HTTP surface.
 //!
 //! Two MCP clients ("joaquin" and "marta") connect over Streamable HTTP with
-//! their own bearer tokens, exactly as two teammates' Claude Code instances
+//! their own bearer tokens, exactly as two teammates' coding agents
 //! would, and are checked for the properties that actually matter: isolation
 //! between teams, identity that cannot be spoofed, and task claims that do not
 //! hand the same work to two agents.
