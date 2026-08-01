@@ -62,10 +62,20 @@ impl Harness {
     async fn shutdown(mut self) {
         self.ct.cancel();
         let servers = std::mem::take(&mut self.servers);
-        for handle in servers {
+        for mut handle in servers {
             // Graceful shutdown is wired to the token; the timeout keeps a
-            // wedged task from hanging the suite instead of failing it.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+            // wedged task from hanging the suite. Dropping the JoinHandle
+            // would DETACH the task rather than stop it — the exact leak this
+            // harness exists to prevent — so a timeout aborts it explicitly.
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.is_panic() => panic!("a server task panicked: {e}"),
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    handle.abort();
+                    panic!("a server task did not stop within 5s of cancellation");
+                }
+            }
         }
         // Best effort: a failure here must not fail an otherwise green test,
         // and `setup` drops the schema on the way in regardless.
@@ -239,7 +249,17 @@ async fn call_expect_error(client: &Client, name: &str, args: Value) -> String {
 /// Same harness, but with the in-process rate limiter enabled — the default
 /// setup disables it so the suite can hammer the server.
 async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
-    let url = db_url()?;
+    let url = match db_url() {
+        Some(url) => url,
+        None => {
+            assert!(
+                !db_required(),
+                "AI_CREW_SYNC_REQUIRE_DB is set but TEST_DATABASE_URL is not: \
+                 this test would have silently passed without a database"
+            );
+            return None;
+        }
+    };
     let pool = PgPoolOptions::new()
         .max_connections(8)
         .after_connect({
@@ -1135,6 +1155,10 @@ async fn transport_limits_reject_oversized_and_too_frequent_requests() {
         text.contains("too large") && text.contains("attachments"),
         "413 tells the caller what to do: {text}"
     );
+    assert!(
+        text.contains("65536"),
+        "413 states the limit this server is configured with: {text}"
+    );
 
     // Burst past the bucket → 429 with Retry-After and advice.
     let small = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}"#;
@@ -1664,6 +1688,17 @@ async fn pruning_is_dry_by_default_and_keeps_durable_state() {
     let err = ai_crew_sync::store::quota::prune(&h.pool, team.0, 0, true).await;
     assert!(err.is_err(), "older_than_days must be at least 1");
 
+    // A day count above i32::MAX used to wrap NEGATIVE, which makes
+    // `now() - make_interval(days => -N)` a FUTURE instant — so every row
+    // matched and "keep almost everything" became "delete everything".
+    let err = ai_crew_sync::store::quota::prune(&h.pool, team.0, 2_147_483_648, true).await;
+    assert!(err.is_err(), "a day count above i32::MAX must be refused");
+    let (survived,): (i64,) = sqlx::query_as("SELECT count(*) FROM notes")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(survived, 1, "a refused prune deletes nothing");
+
     let _ = joaquin.cancel().await;
     h.shutdown().await;
 }
@@ -1675,6 +1710,7 @@ async fn pruning_is_dry_by_default_and_keeps_durable_state() {
 async fn shutdown_stops_the_server_and_its_background_tasks() {
     let h = require_db!("t_shutdown");
     let base = h.base.clone();
+    let pool = h.pool.clone();
     let token = seed_agent(&h.pool, "acme", "joaquin").await;
 
     // Alive before.
@@ -1697,8 +1733,14 @@ async fn shutdown_stops_the_server_and_its_background_tasks() {
         "the server should no longer accept connections"
     );
 
-    // And the token is gone with the pool — proving the pool closed too.
-    assert!(!token.is_empty());
+    // The pool is closed too, so a query through it fails rather than
+    // silently opening a fresh connection.
+    let seeded = sqlx::query("SELECT 1").execute(&pool).await;
+    assert!(
+        seeded.is_err(),
+        "the harness pool must be closed after shutdown"
+    );
+    assert!(!token.is_empty(), "the agent was seeded before shutdown");
 }
 
 #[tokio::test]
@@ -1921,6 +1963,19 @@ async fn oversized_fields_are_rejected_with_their_limit() {
     )
     .await;
     assert!(err.contains("1048576"), "names the note limit: {err}");
+
+    // Whitespace padding must not smuggle a large payload past the cap.
+    let padded = format!("{}fits", " ".repeat(700));
+    let err = call_expect_error(
+        &joaquin,
+        "create_task",
+        json!({"key": "padded", "title": padded}),
+    )
+    .await;
+    assert!(
+        err.contains("512"),
+        "raw size counts, not just trimmed: {err}"
+    );
 
     // And values just under the limits still work.
     call(

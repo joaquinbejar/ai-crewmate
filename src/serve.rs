@@ -63,6 +63,7 @@ async fn health(
 /// model, so replace it with a body that says what the limit is and what to
 /// do instead.
 async fn explain_payload_too_large(
+    limit: usize,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -73,9 +74,11 @@ async fn explain_payload_too_large(
     (
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         axum::Json(serde_json::json!({
-            "error": "request body is too large. Send fewer or smaller \
-                      attachments (256 KiB each, 8 per message), or split the \
-                      call into several smaller ones."
+            "error": format!(
+                "request body is too large; this server accepts up to {limit} bytes. \
+                 Send fewer or smaller attachments (256 KiB each, 8 per message), \
+                 or split the call into several smaller ones."
+            )
         })),
     )
         .into_response()
@@ -147,7 +150,10 @@ pub fn build_router(pool: PgPool, opts: &ServeOptions, ct: CancellationToken) ->
         // layer, not axum's DefaultBodyLimit — the MCP service reads the raw
         // body itself, so an extractor-level limit would never fire.
         .layer(RequestBodyLimitLayer::new(opts.max_request_bytes))
-        .layer(axum::middleware::from_fn(explain_payload_too_large));
+        .layer(axum::middleware::from_fn({
+            let limit = opts.max_request_bytes;
+            move |req, next| explain_payload_too_large(limit, req, next)
+        }));
 
     let dashboard_state = dashboard::DashboardState {
         pool: pool.clone(),

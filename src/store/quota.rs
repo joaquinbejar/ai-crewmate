@@ -120,11 +120,22 @@ pub async fn prune(
     older_than_days: i64,
     dry_run: bool,
 ) -> BusResult<PruneReport> {
+    // Bounds, not just a floor. The cast to i32 below wraps for values above
+    // i32::MAX, and a NEGATIVE day count makes `now() - make_interval(days =>
+    // -N)` a future instant — so `created_at < that` matches every row and a
+    // retention request silently becomes "delete everything".
     if older_than_days < 1 {
         return Err(BusError::invalid(
             "older_than_days must be at least 1; pruning everything is not a retention policy",
         ));
     }
+    let days = i32::try_from(older_than_days).map_err(|_| {
+        BusError::invalid(format!(
+            "older_than_days is {older_than_days}, which is larger than this can express; \
+             use a window of at most {} days",
+            i32::MAX
+        ))
+    })?;
     let mut tx = pool.begin().await?;
 
     // Measured before the delete, because the rows are gone afterwards.
@@ -137,7 +148,7 @@ pub async fn prune(
         "#,
     )
     .bind(team_id)
-    .bind(older_than_days as i32)
+    .bind(days)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -152,7 +163,7 @@ pub async fn prune(
         "#,
     )
     .bind(team_id)
-    .bind(older_than_days as i32)
+    .bind(days)
     .execute(&mut *tx)
     .await?
     .rows_affected();
@@ -166,7 +177,7 @@ pub async fn prune(
         "#,
     )
     .bind(team_id)
-    .bind(older_than_days as i32)
+    .bind(days)
     .execute(&mut *tx)
     .await?
     .rows_affected();
@@ -176,7 +187,7 @@ pub async fn prune(
         "DELETE FROM messages WHERE team_id = $1 AND created_at < now() - make_interval(days => $2)",
     )
     .bind(team_id)
-    .bind(older_than_days as i32)
+    .bind(days)
     .execute(&mut *tx)
     .await?
     .rows_affected();

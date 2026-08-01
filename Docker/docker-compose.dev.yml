@@ -5,6 +5,8 @@
 services:
   bus:
     build:
-      context: ..
+      # Relative to the project directory (the repo root, which the Makefile
+      # pins with --project-directory), NOT to this file's location.
+      context: .
       dockerfile: Docker/Dockerfile
     image: ai-crew-sync:dev

@@ -60,6 +60,15 @@ lint-fix: ## Apply the clippy fixes that are machine-applicable
 validate: ## Render every compose shape: local renders, production refuses without secrets
 	@$(COMPOSE) config -q && echo "  ok  Docker/docker-compose.yml"
 	@$(COMPOSE_DEV) config -q && echo "  ok  + Docker/docker-compose.dev.yml"
+	@# `config -q` validates shape but never resolves a build context, so a
+	@# context pointing outside the repo renders fine and fails at build time.
+	@ctx=$$($(COMPOSE_DEV) config --format json 2>/dev/null \
+		| python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["bus"]["build"]["context"])'); \
+	if [ -d "$$ctx" ] && [ -f "$$ctx/Cargo.toml" ]; then \
+		echo "  ok  + dev build context resolves to the crate root"; \
+	else \
+		echo "  FAIL  dev build context '$$ctx' is not the crate root"; exit 1; \
+	fi
 	@if env -u POSTGRES_PASSWORD -u BUS_VERSION -u BUS_ALLOWED_HOSTS \
 			-u BUS_DASHBOARD_SECRET $(COMPOSE_PROD) --env-file /dev/null config -q 2>/dev/null; then \
 		echo "  FAIL  the production overlay rendered without its required values"; exit 1; \
