@@ -31,7 +31,7 @@ help: ## List every target
 # --- verification -----------------------------------------------------------
 
 .PHONY: check
-check: fmt-check lint validate ## Pre-push gate: format, clippy, compose files render. Offline.
+check: fmt-check lint validate config-check ## Pre-push gate: format, clippy, compose files render, config documented. Offline.
 
 .PHONY: pre-push
 pre-push: check ## Alias for check
@@ -56,6 +56,23 @@ lint-fix: ## Apply the clippy fixes that are machine-applicable
 validate: ## Render both compose files (shape check; every variable has a default)
 	@$(COMPOSE) config -q && echo "  ok  Docker/docker-compose.yml"
 	@$(COMPOSE_DEV) config -q && echo "  ok  + Docker/docker-compose.dev.yml"
+
+# A knob nobody can discover is a knob nobody can set. Every variable the
+# server, the compose files, the client or the plugin reads must appear in
+# .env.example — commented out is fine, absent is not. (Make's own variables
+# are not user configuration; they are documented by `make help`.)
+.PHONY: config-check
+config-check: ## Fail if a configuration variable is missing from .env.example
+	@missing=""; \
+	for v in $$(grep -rhoE '\b(BUS|POSTGRES|DATABASE|RUST)_[A-Z_]+' \
+			src Docker plugin 2>/dev/null | sort -u); do \
+		case "$$v" in POSTGRES_USER|POSTGRES_DB) continue ;; esac; \
+		grep -qE "^#? *$$v([=:]|$$)" .env.example || missing="$$missing $$v"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "undocumented in .env.example:$$missing"; exit 1; \
+	fi; \
+	echo "config: every variable is documented"
 
 .PHONY: test
 test: ## Integration tests against a throwaway Postgres (needs docker)
