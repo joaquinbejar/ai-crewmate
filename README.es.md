@@ -46,12 +46,12 @@ Decisiones de diseño:
 # macOS / Linux, con Homebrew
 brew install joaquinbejar/tap/ai-crew-sync
 
-# Debian / Ubuntu
-curl -LO https://github.com/joaquinbejar/ai-crew-sync/releases/latest/download/ai-crew-sync_0.5.1_amd64.deb
-sudo dpkg -i ai-crew-sync_0.5.1_amd64.deb
+# Debian / Ubuntu  (cambia amd64 por arm64 en máquinas ARM)
+curl -LO https://github.com/joaquinbejar/ai-crew-sync/releases/latest/download/ai-crew-sync_amd64.deb
+sudo dpkg -i ai-crew-sync_amd64.deb
 
-# RHEL / Rocky / Fedora
-sudo rpm -i https://github.com/joaquinbejar/ai-crew-sync/releases/latest/download/ai-crew-sync-0.5.1.x86_64.rpm
+# RHEL / Rocky / Fedora  (o ai-crew-sync.aarch64.rpm)
+sudo rpm -i https://github.com/joaquinbejar/ai-crew-sync/releases/latest/download/ai-crew-sync.x86_64.rpm
 
 # Desde el código, o como contenedor
 cargo install ai-crew-sync
@@ -70,7 +70,9 @@ sudo systemctl enable --now ai-crew-sync
 ```
 
 Los binarios de Linux están enlazados estáticamente contra musl, así que
-funcionan en cualquier distribución sea cual sea su glibc.
+funcionan en cualquier distribución sea cual sea su glibc. Cada paquete se
+instala y se ejecuta dentro de la distribución a la que apunta antes de que
+una release lo publique.
 
 ## Arranque rápido (docker-compose)
 
