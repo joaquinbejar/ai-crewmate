@@ -9,9 +9,17 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 "$DIR/heartbeat.sh" active >/dev/null 2>&1 || true
 command -v python3 >/dev/null 2>&1 || exit 0
 
+# team_digest takes 1-336; anything else (empty, non-numeric, out of range)
+# would build invalid JSON, so fall back to the default rather than send it.
+HOURS="${BUS_DIGEST_HOURS:-8}"
+case "$HOURS" in
+    ''|*[!0-9]*) HOURS=8 ;;
+    *) [ "$HOURS" -ge 1 ] && [ "$HOURS" -le 336 ] || HOURS=8 ;;
+esac
+
 WHO="$("$DIR/bus-call.sh" whoami 2>/dev/null || true)"
-DIG="$("$DIR/bus-call.sh" team_digest "{\"hours\":${BUS_DIGEST_HOURS:-8}}" 2>/dev/null || true)"
-export WHO DIG BUS_DIGEST_HOURS="${BUS_DIGEST_HOURS:-8}"
+DIG="$("$DIR/bus-call.sh" team_digest "{\"hours\":$HOURS}" 2>/dev/null || true)"
+export WHO DIG BUS_DIGEST_HOURS="$HOURS"
 
 python3 - <<'PY' 2>/dev/null || true
 import json, os
@@ -38,7 +46,7 @@ if who:
     if dm:
         lines.append(f"- {dm} unread direct message(s) for you. Read them with read_messages before starting work.")
     if ct:
-        lines.append(f"- {ct} task(s) claimed by you are still open (list_tasks mine=true).")
+        lines.append(f"- {ct} task(s) claimed by you are still open (list_tasks mine_only=true).")
 if dig:
     hours = os.environ.get("BUS_DIGEST_HOURS", "8")
     compact = json.dumps(dig, ensure_ascii=False, separators=(",", ":"))
@@ -46,8 +54,8 @@ if dig:
         compact = compact[:2500] + "…(truncated — call team_digest for the full picture)"
     lines.append(f"- Team activity, last {hours}h (team_digest): {compact}")
 lines.append(
-    "- Conventions: claim_task before working on shared tasks, post progress to the relevant "
-    "channel, and use wait_for_updates when you need a teammate's reply."
+    "- Conventions: claim_task before working on shared tasks, renew_task_lease on long ones, "
+    "post progress to the relevant channel, and ask_agent when you need a teammate's reply."
 )
 
 print(json.dumps({
