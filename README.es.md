@@ -55,8 +55,8 @@ make up      # = docker compose -f Docker/docker-compose.yml up -d (imagen de GH
 ```
 
 Todas las variables tienen default razonable; se sobrescriben por entorno o
-en `./.env` (parte de `.env.example` — pon un `POSTGRES_PASSWORD`
-real para cualquier cosa no local). `make up-dev` construye desde el checkout.
+en `./.env` (parte de `.env.example`, que documenta cada knob con su
+default — pon un `POSTGRES_PASSWORD` real para cualquier cosa no local). `make up-dev` construye desde el checkout.
 **Docker Swarm** funciona con el mismo fichero:
 
 ```bash
