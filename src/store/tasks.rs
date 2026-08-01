@@ -11,6 +11,13 @@ const DEFAULT_LEASE_SECS: i64 = 900; // 15 minutes
 const MAX_LEASE_SECS: i64 = 86_400;
 const MAX_LIMIT: i64 = 200;
 
+/// A title is a handle a human recognises in a list, not a description.
+const MAX_TITLE_BYTES: usize = 512;
+/// Descriptions and results carry context; the body-sized budget is the same
+/// one messages get, because that is what an agent tends to paste into both.
+const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
+const MAX_RESULT_BYTES: usize = 64 * 1024;
+
 #[derive(sqlx::FromRow)]
 struct TaskRow {
     key: String,
@@ -137,10 +144,19 @@ pub struct CreateInput {
 
 pub async fn create_task(pool: &PgPool, auth: &AuthCtx, input: CreateInput) -> BusResult<TaskInfo> {
     let key = normalize_key(&input.key)?;
-    let title = input.title.trim();
+    let title = super::check_text("task title", &input.title, MAX_TITLE_BYTES)?;
     if title.is_empty() {
         return Err(BusError::invalid("task title cannot be empty"));
     }
+    let description = match input.description.as_deref() {
+        Some(d) => Some(super::check_text(
+            "task description",
+            d,
+            MAX_DESCRIPTION_BYTES,
+        )?),
+        None => None,
+    };
+    super::check_metadata("task", input.metadata.as_ref())?;
     let metadata = input
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
@@ -192,8 +208,8 @@ pub async fn create_task(pool: &PgPool, auth: &AuthCtx, input: CreateInput) -> B
     )
     .bind(auth.team_id)
     .bind(&key)
-    .bind(title)
-    .bind(input.description.as_deref())
+    .bind(&title)
+    .bind(description.as_deref())
     .bind(&metadata)
     .bind(auth.agent_id)
     .fetch_one(pool)
@@ -209,7 +225,7 @@ pub async fn create_task(pool: &PgPool, auth: &AuthCtx, input: CreateInput) -> B
             .await?;
     }
 
-    log_event(pool, id, auth.agent_id, "created", Some(title)).await?;
+    log_event(pool, id, auth.agent_id, "created", Some(&title)).await?;
     fetch_task(pool, auth, &key).await
 }
 
@@ -544,6 +560,10 @@ pub async fn complete_task(
     result: Option<String>,
 ) -> BusResult<TaskInfo> {
     let key = normalize_key(key)?;
+    let result = match result.as_deref() {
+        Some(r) => Some(super::check_text("task result", r, MAX_RESULT_BYTES)?),
+        None => None,
+    };
     let updated: Option<(Uuid,)> = sqlx::query_as(
         r#"
         UPDATE tasks

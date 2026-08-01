@@ -959,6 +959,100 @@ async fn ask_agent_returns_the_teammates_answer() {
 }
 
 #[tokio::test]
+async fn oversized_fields_are_rejected_with_their_limit() {
+    let h = require_db!("t_caps");
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let joaquin = connect(&h.base, &a).await;
+    call(&joaquin, "create_channel", json!({"name": "dev"})).await;
+
+    // metadata is a pointer payload, not a document: 16 KiB.
+    let fat = "x".repeat(20 * 1024);
+    let err = call_expect_error(
+        &joaquin,
+        "post_message",
+        json!({"channel": "dev", "body": "hi", "metadata": {"blob": fat}}),
+    )
+    .await;
+    assert!(err.contains("16384"), "names the metadata limit: {err}");
+
+    let err = call_expect_error(
+        &joaquin,
+        "create_task",
+        json!({"key": "fat-meta", "title": "t", "metadata": {"blob": fat}}),
+    )
+    .await;
+    assert!(err.contains("16384"), "same limit on tasks: {err}");
+
+    // Task text fields.
+    let long_title = "t".repeat(600);
+    let err = call_expect_error(
+        &joaquin,
+        "create_task",
+        json!({"key": "long-title", "title": long_title}),
+    )
+    .await;
+    assert!(err.contains("512"), "names the title limit: {err}");
+
+    let long_text = "d".repeat(70 * 1024);
+    let err = call_expect_error(
+        &joaquin,
+        "create_task",
+        json!({"key": "long-desc", "title": "t", "description": long_text.clone()}),
+    )
+    .await;
+    assert!(err.contains("65536"), "names the description limit: {err}");
+
+    call(
+        &joaquin,
+        "create_task",
+        json!({"key": "capped", "title": "fits"}),
+    )
+    .await;
+    call(&joaquin, "claim_task", json!({"key": "capped"})).await;
+    let err = call_expect_error(
+        &joaquin,
+        "complete_task",
+        json!({"key": "capped", "result": long_text}),
+    )
+    .await;
+    assert!(err.contains("65536"), "names the result limit: {err}");
+
+    // Nothing oversized was stored: the task is still claimed, not done.
+    let task = call(&joaquin, "get_task", json!({"key": "capped"})).await;
+    assert_eq!(task["task"]["status"], "claimed", "{task:?}");
+
+    // Whitespace padding must not smuggle a huge payload past the cap: the
+    // stored value would be small, but the server still had to carry it.
+    let padded = format!("{}fits", " ".repeat(700));
+    let err = call_expect_error(
+        &joaquin,
+        "create_task",
+        json!({"key": "padded", "title": padded}),
+    )
+    .await;
+    assert!(
+        err.contains("512"),
+        "raw size counts, not just trimmed: {err}"
+    );
+
+    // And values just under the limits still work.
+    call(
+        &joaquin,
+        "post_message",
+        json!({"channel": "dev", "body": "ok", "metadata": {"k": "v"}}),
+    )
+    .await;
+    call(
+        &joaquin,
+        "create_task",
+        json!({"key": "ok-task", "title": "t".repeat(512), "description": "d".repeat(1000)}),
+    )
+    .await;
+
+    let _ = joaquin.cancel().await;
+}
+
+#[tokio::test]
 async fn attachments_travel_with_messages_and_tasks() {
     use base64::Engine;
     let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);

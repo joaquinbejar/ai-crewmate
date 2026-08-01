@@ -6,9 +6,6 @@ on:
   pull_request:
   workflow_call:
 
-permissions:
-  contents: read
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -77,7 +74,7 @@ jobs:
           key: msrv
       - name: Assert the pin matches Cargo.toml
         run: |
-          declared=$(grep -m1 -E '^[[:space:]]*rust-version[[:space:]]*=' Cargo.toml | cut -d'"' -f2)
+          declared=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
           if [ "$declared" != "1.88" ]; then
             echo "Cargo.toml declares rust-version = $declared but this job pins 1.88."
             echo "Update the toolchain here and the MSRV policy in the READMEs."

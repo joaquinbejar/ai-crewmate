@@ -229,8 +229,7 @@ then `cargo run -- serve` (migrates on startup) and
 ### Toolchain policy
 
 The crate's MSRV is the `rust-version` in `Cargo.toml` (**1.88**). CI proves
-it on every pull request and every push to `main`: one job runs the current
-stable (format, Clippy, tests),
+it on every push: one job runs the current stable (format, Clippy, tests),
 another builds and tests on the pinned MSRV, so a dependency bump that needs
 a newer compiler fails before release rather than in your `cargo install`.
 
