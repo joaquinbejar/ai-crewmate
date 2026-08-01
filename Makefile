@@ -85,7 +85,8 @@ test: ## Integration tests against a throwaway Postgres (needs docker)
 		-e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
 		$(TEST_PG_IMAGE) >/dev/null
 	@until docker exec $(TEST_PG_NAME) pg_isready -U test >/dev/null 2>&1; do sleep 1; done
-	@TEST_DATABASE_URL=postgres://test:test@localhost:$(TEST_PG_PORT)/test cargo test; \
+	@AI_CREW_SYNC_REQUIRE_DB=1 \
+		TEST_DATABASE_URL=postgres://test:test@localhost:$(TEST_PG_PORT)/test cargo test; \
 		status=$$?; docker rm -f $(TEST_PG_NAME) >/dev/null; exit $$status
 
 # --- build and run ----------------------------------------------------------
