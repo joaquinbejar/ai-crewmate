@@ -212,8 +212,17 @@ ai-crew-sync webhook list --team acme
 ai-crew-sync webhook remove --id <uuid>
 ```
 
-El despachador corre dentro de `serve` (escucha los eventos LISTEN/NOTIFY de
-Postgres); no hay nada más que desplegar.
+La entrega es **at-least-once y segura con réplicas**. Un trigger de base de
+datos encola una fila por (evento, webhook que coincide) al confirmarse el
+cambio — una vez, corran las réplicas que corran — y cada réplica reclama
+trabajo con `FOR UPDATE SKIP LOCKED`. Un receptor que da timeout o 500 se
+reintenta con backoff exponencial hasta seis veces; el que sigue fallando
+queda aparcado como `failed` en `webhook_deliveries` con su último error,
+para que un operador lo vea. Un 4xx que no sea 408/429 se considera
+permanente y no se reintenta. Las entregas enviadas se purgan al día, las
+fallidas a la semana.
+
+El despachador corre dentro de `serve`; no hay nada más que desplegar.
 
 ## Desarrollo
 
