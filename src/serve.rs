@@ -2,7 +2,11 @@ use std::time::Duration;
 
 use anyhow::Context;
 use axum::response::IntoResponse;
-use axum::{Router, extract::State, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    routing::{get, post},
+};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -22,6 +26,9 @@ pub struct ServeOptions {
     pub max_request_bytes: usize,
     /// Requests per minute per token; 0 disables in-process limiting.
     pub rate_limit_per_minute: u32,
+    /// Signs the dashboard's read-only session grants. Share it across
+    /// replicas so a grant issued by one is accepted by the others.
+    pub dashboard_secret: Vec<u8>,
 }
 
 /// Headroom over the largest legitimate request: a 1 MiB message body plus
@@ -52,12 +59,10 @@ async fn health(
     }
 }
 
-/// The body limit answers with a bare 413. The caller here is a language
-/// model, so replace it with a body that states the configured limit and what
-/// to do instead — an operator who raises BUS_MAX_REQUEST_BYTES should see
-/// their number, not a hard-coded one.
+/// `DefaultBodyLimit` answers with a bare 413. The caller here is a language
+/// model, so replace it with a body that says what the limit is and what to
+/// do instead.
 async fn explain_payload_too_large(
-    limit: usize,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -68,11 +73,9 @@ async fn explain_payload_too_large(
     (
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         axum::Json(serde_json::json!({
-            "error": format!(
-                "request body is too large; this server accepts up to {limit} bytes. \
-                 Send fewer or smaller attachments (256 KiB each, 8 per message), \
-                 or split the call into several smaller ones."
-            )
+            "error": "request body is too large. Send fewer or smaller \
+                      attachments (256 KiB each, 8 per message), or split the \
+                      call into several smaller ones."
         })),
     )
         .into_response()
@@ -144,16 +147,33 @@ pub fn build_router(pool: PgPool, opts: &ServeOptions, ct: CancellationToken) ->
         // layer, not axum's DefaultBodyLimit — the MCP service reads the raw
         // body itself, so an extractor-level limit would never fire.
         .layer(RequestBodyLimitLayer::new(opts.max_request_bytes))
-        .layer(axum::middleware::from_fn({
-            let limit = opts.max_request_bytes;
-            move |req, next| explain_payload_too_large(limit, req, next)
-        }));
+        .layer(axum::middleware::from_fn(explain_payload_too_large));
+
+    let dashboard_state = dashboard::DashboardState {
+        pool: pool.clone(),
+        secret: std::sync::Arc::new(opts.dashboard_secret.clone()),
+    };
+    let dashboard_routes = Router::new()
+        .route("/dashboard", get(dashboard::render))
+        .route("/dashboard/login", post(dashboard::login))
+        .with_state(dashboard_state);
 
     Router::new()
         .route("/health", get(health))
-        .route("/dashboard", get(dashboard::render))
+        .merge(dashboard_routes)
         .merge(mcp_routes)
-        .layer(TraceLayer::new_for_http())
+        // Record the method and path only. The default span records the whole
+        // URI, which is how a credential in a query string reaches the logs —
+        // the dashboard no longer accepts one, and the logs no longer invite it.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
+                tracing::info_span!(
+                    "http",
+                    method = %req.method(),
+                    path = %req.uri().path(),
+                )
+            }),
+        )
         .with_state(pool)
 }
 

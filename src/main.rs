@@ -86,6 +86,12 @@ struct ServeArgs {
     #[arg(long, env = "BUS_RATE_LIMIT_PER_MINUTE",
           default_value_t = serve::DEFAULT_RATE_LIMIT_PER_MINUTE)]
     rate_limit_per_minute: u32,
+
+    /// Signs the dashboard's read-only session cookies. Set the same value on
+    /// every replica so a session works across all of them; when unset a
+    /// random key is generated at startup, so sessions end at restart.
+    #[arg(long, env = "BUS_DASHBOARD_SECRET")]
+    dashboard_secret: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -236,6 +242,16 @@ async fn main() -> anyhow::Result<()> {
                      service validates it"
                 );
             }
+            let dashboard_secret = match args.dashboard_secret {
+                Some(s) if !s.trim().is_empty() => s.into_bytes(),
+                _ => {
+                    tracing::warn!(
+                        "BUS_DASHBOARD_SECRET is unset: dashboard sessions end at restart \
+                         and are not shared between replicas"
+                    );
+                    ai_crew_sync::auth::generate_token().into_bytes()
+                }
+            };
             serve::run(
                 pool,
                 serve::ServeOptions {
@@ -244,6 +260,7 @@ async fn main() -> anyhow::Result<()> {
                     allowed_origins: split_csv(&args.allowed_origins),
                     max_request_bytes: args.max_request_bytes,
                     rate_limit_per_minute: args.rate_limit_per_minute,
+                    dashboard_secret,
                 },
             )
             .await?;

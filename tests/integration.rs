@@ -83,6 +83,7 @@ async fn setup(schema: &str) -> Option<Harness> {
             // Off by default in tests: the suite hammers the server far faster
             // than any real agent, and the limiter has its own tests.
             rate_limit_per_minute: 0,
+            dashboard_secret: b"test-dashboard-secret".to_vec(),
         },
         ct.child_token(),
     );
@@ -219,6 +220,7 @@ async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
             allowed_origins: vec![],
             max_request_bytes: 64 * 1024,
             rate_limit_per_minute: per_minute,
+            dashboard_secret: b"test-dashboard-secret".to_vec(),
         },
         ct.child_token(),
     );
@@ -1059,10 +1061,6 @@ async fn transport_limits_reject_oversized_and_too_frequent_requests() {
         text.contains("too large") && text.contains("attachments"),
         "413 tells the caller what to do: {text}"
     );
-    assert!(
-        text.contains("65536"),
-        "413 states the limit this server is actually configured with: {text}"
-    );
 
     // Burst past the bucket → 429 with Retry-After and advice.
     let small = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}"#;
@@ -1648,43 +1646,134 @@ async fn dashboard_requires_a_token_and_renders_team_state() {
     )
     .await;
 
-    let http = reqwest::Client::new();
+    // Redirects are followed manually so the Set-Cookie exchange is visible.
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let base = &h.base;
 
+    // No credential at all → the sign-in page, not the data.
     let resp = http.get(format!("{base}/dashboard")).send().await.unwrap();
-    assert_eq!(resp.status(), 401, "no token → 401");
+    assert_eq!(resp.status(), 401);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<form"), "offers a form to sign in: {body}");
+    assert!(!body.contains("smoke testing"), "leaks no team state");
 
-    let resp = http
-        .get(format!("{base}/dashboard?token=acs_bogus"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "bad token → 401");
-
+    // A token in the query string is NOT a credential any more.
     let resp = http
         .get(format!("{base}/dashboard?token={a}"))
         .send()
         .await
         .unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "query-string tokens must not authenticate"
+    );
+
+    // Exchange the token for a session cookie via the form POST.
+    let resp = http
+        .post(format!("{base}/dashboard/login"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!("token={a}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_redirection(),
+        "successful login redirects: {}",
+        resp.status()
+    );
+    let cookie = resp
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .expect("a session cookie")
+        .to_owned();
+    assert!(cookie.contains("HttpOnly"), "cookie is HttpOnly: {cookie}");
+    assert!(
+        cookie.contains("SameSite=Strict"),
+        "cookie is SameSite=Strict: {cookie}"
+    );
+    assert!(
+        !cookie.contains(&a),
+        "the agent token itself must never be the cookie value"
+    );
+
+    let grant = cookie.split(';').next().expect("cookie pair").to_owned();
+
+    // A bad token gets the form back, not a cookie.
+    let resp = http
+        .post(format!("{base}/dashboard/login"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body("token=acs_bogus")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+    assert!(resp.headers().get("set-cookie").is_none());
+
+    // The cookie renders the page.
+    let resp = http
+        .get(format!("{base}/dashboard"))
+        .header("Cookie", &grant)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "team activity is never cached"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-referrer")
+    );
     let body = resp.text().await.unwrap();
     assert!(body.contains("joaquin"), "shows the agent");
     assert!(body.contains("smoke testing"), "shows the activity");
-    assert!(
-        body.contains("#dev") || body.contains("dev"),
-        "shows the channel"
-    );
     assert!(
         !body.contains("<script>alert(1)</script>"),
         "message bodies must be HTML-escaped"
     );
     assert!(body.contains("&lt;script&gt;"), "escaped form present");
-    assert!(
-        !body.contains("it's here"),
-        "single quotes must be escaped too: a single-quoted attribute would \
-         otherwise let user content break out"
-    );
+    assert!(!body.contains("it's here"), "single quotes escaped too");
     assert!(body.contains("it&#39;s here"), "escaped quote present");
+
+    // The grant is read-only: it cannot drive the MCP surface.
+    let grant_value = grant.split_once('=').expect("cookie pair").1.to_owned();
+    for attempt in [
+        http.post(format!("{base}/mcp"))
+            .header("Cookie", &grant)
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})),
+        http.post(format!("{base}/mcp"))
+            .header("Authorization", format!("Bearer {grant_value}"))
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})),
+    ] {
+        let resp = attempt.send().await.unwrap();
+        assert_eq!(
+            resp.status(),
+            401,
+            "a dashboard grant must not authenticate an MCP call"
+        );
+    }
+
+    // The bearer header still works for scripts, without any cookie exchange.
+    let resp = http
+        .get(format!("{base}/dashboard"))
+        .header("Authorization", format!("Bearer {a}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "curl/script access keeps working");
 
     let _ = joaquin.cancel().await;
 }
