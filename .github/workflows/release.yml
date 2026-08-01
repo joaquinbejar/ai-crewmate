@@ -161,6 +161,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
+      # An amd64 runner cannot execute an arm64 binary on its own, and an
+      # arm64 package that installs but cannot run is exactly what this job
+      # exists to catch.
+      - uses: docker/setup-qemu-action@v3
       - name: Install packaging tools
         run: cargo install cargo-deb cargo-generate-rpm --locked
 
@@ -224,6 +228,29 @@ jobs:
             test -f /usr/lib/systemd/system/ai-crew-sync.service
             id ai-crew-sync >/dev/null
             echo "rpm: installs, runs, ships its unit and its user"
+          '
+
+      # Same checks on the other architecture, through emulation. Slower, and
+      # the arm64 package is the one nobody would notice was broken.
+      - name: Verify the arm64 .deb on Debian 12
+        run: |
+          docker run --rm --platform linux/arm64 -v "$PWD/dist:/pkg" debian:12 sh -c '
+            set -e
+            dpkg -i /pkg/ai-crew-sync_arm64.deb
+            ai-crew-sync --version
+            test -f /etc/ai-crew-sync/ai-crew-sync.env
+            id ai-crew-sync >/dev/null
+            echo "arm64 deb: installs, runs, ships its unit and its user"
+          '
+      - name: Verify the aarch64 .rpm on Rocky Linux 9
+        run: |
+          docker run --rm --platform linux/arm64 -v "$PWD/dist:/pkg" rockylinux:9 sh -c '
+            set -e
+            rpm -i /pkg/ai-crew-sync.aarch64.rpm
+            ai-crew-sync --version
+            test -f /etc/ai-crew-sync/ai-crew-sync.env
+            id ai-crew-sync >/dev/null
+            echo "aarch64 rpm: installs, runs, ships its unit and its user"
           '
 
       - uses: actions/upload-artifact@v4
