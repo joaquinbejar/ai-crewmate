@@ -1,4 +1,8 @@
 # ---- build stage ----------------------------------------------------------
+# Deliberately newer than the crate's MSRV (Cargo.toml `rust-version`): the
+# published binary gets current codegen and security fixes, while CI's `msrv`
+# job proves the source still compiles on the declared floor. The two move
+# independently — bumping this line is not an MSRV bump.
 FROM rust:1.95-slim AS build
 WORKDIR /app
 
