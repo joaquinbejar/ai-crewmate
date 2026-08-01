@@ -143,34 +143,7 @@ logs: ## Follow stack logs
 # non-deterministic.
 .PHONY: deploy-check
 deploy-check: ## Verify production values are present and safe (no cluster contact)
-	@fail=0; \
-	if [ -z "$$POSTGRES_PASSWORD" ]; then \
-		echo "POSTGRES_PASSWORD is not set"; fail=1; \
-	elif [ "$$POSTGRES_PASSWORD" = "change-me" ]; then \
-		echo "POSTGRES_PASSWORD is still the example value"; fail=1; \
-	fi; \
-	case "$${BUS_VERSION:-}" in \
-		"")     echo "BUS_VERSION is not set (pin an immutable tag)"; fail=1 ;; \
-		latest) echo "BUS_VERSION must be immutable, not 'latest'"; fail=1 ;; \
-	esac; \
-	if [ -z "$$BUS_DASHBOARD_SECRET" ]; then \
-		echo "BUS_DASHBOARD_SECRET is not set"; \
-		echo "  (without it, dashboard sessions end at restart and do not work across replicas)"; \
-		fail=1; \
-	fi; \
-	if [ -z "$$BUS_ALLOWED_HOSTS" ]; then \
-		echo "BUS_ALLOWED_HOSTS is not set"; \
-		echo "  (use your hostname, or '*' if a proxy already validates Host)"; \
-		fail=1; \
-	elif [ "$$BUS_ALLOWED_HOSTS" = "*" ]; then \
-		echo "note: BUS_ALLOWED_HOSTS=* is only safe behind a proxy that validates Host"; \
-	fi; \
-	if [ $$fail -ne 0 ]; then \
-		echo ""; \
-		echo "refusing to deploy: fix the above, then re-run"; \
-		exit 1; \
-	fi; \
-	echo "deploy preflight: ok"
+	@fail=0; 	[ -n "$$POSTGRES_PASSWORD" ] || { echo "POSTGRES_PASSWORD is not set"; fail=1; }; 	[ "$$POSTGRES_PASSWORD" != "change-me" ] || { echo "POSTGRES_PASSWORD is still the example value"; fail=1; }; 	[ -n "$$BUS_VERSION" ] || { echo "BUS_VERSION is not set (pin an immutable tag)"; fail=1; }; 	case "$$BUS_VERSION" in latest|"") echo "BUS_VERSION must be immutable, not 'latest'"; fail=1 ;; esac; 	[ -n "$$BUS_DASHBOARD_SECRET" ] || { echo "BUS_DASHBOARD_SECRET is not set (dashboard sessions would not survive a restart or work across replicas)"; fail=1; }; 	if [ -z "$$BUS_ALLOWED_HOSTS" ]; then 		echo "BUS_ALLOWED_HOSTS is not set (use your hostname, or '*' if a proxy validates Host)"; fail=1; 	elif [ "$$BUS_ALLOWED_HOSTS" = "*" ]; then 		echo "note: BUS_ALLOWED_HOSTS=* — only safe behind a proxy that validates the Host header"; 	fi; 	[ $$fail -eq 0 ] || { echo ""; echo "refusing to deploy: fix the above, then re-run"; exit 1; }; 	echo "deploy preflight: ok"
 
 .PHONY: deploy
 deploy: deploy-check ## Deploy to the current Docker Swarm as stack '$(STACK)' -- REACHES A REAL ENVIRONMENT

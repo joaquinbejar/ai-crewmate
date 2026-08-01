@@ -13,6 +13,7 @@
 //! values wear text tokens, never status hues. Light and dark surfaces are the
 //! validated reference pair.
 
+pub mod data;
 pub mod grant;
 
 use axum::{
@@ -217,126 +218,28 @@ pub async fn render(State(state): State<DashboardState>, headers: HeaderMap) -> 
     }
 }
 
+/// Render the page from a snapshot. All the SQL lives in [`data`]; this
+/// function only turns rows into HTML.
 async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error> {
-    // Stat-tile numbers.
-    let (agents_online,): (i64,) = sqlx::query_as(
-        r#"SELECT count(*) FROM agents a JOIN agent_presence p ON p.agent_id = a.id
-           WHERE a.team_id = $1 AND p.expires_at > now()"#,
-    )
-    .bind(auth.team_id)
-    .fetch_one(pool)
-    .await?;
-    let (open_tasks, claimed_tasks): (i64, i64) = sqlx::query_as(
-        r#"SELECT count(*) FILTER (WHERE status='open'),
-                  count(*) FILTER (WHERE status='claimed')
-           FROM tasks WHERE team_id = $1"#,
-    )
-    .bind(auth.team_id)
-    .fetch_one(pool)
-    .await?;
-    let (messages_24h,): (i64,) = sqlx::query_as(
-        r#"SELECT count(*) FROM messages
-           WHERE team_id = $1 AND channel_id IS NOT NULL
-             AND created_at > now() - interval '24 hours'"#,
-    )
-    .bind(auth.team_id)
-    .fetch_one(pool)
-    .await?;
+    let data::Snapshot {
+        team,
+        totals,
+        agents,
+        tasks,
+        messages,
+        locks,
+        notes,
+    } = data::load(pool, auth.team_id).await?;
+    let agents_online = totals.agents_online;
+    let open_tasks = totals.open_tasks;
+    let claimed_tasks = totals.claimed_tasks;
+    let messages_24h = totals.messages_24h;
 
-    // Presence table.
-    let agents: Vec<(
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        bool,
-    )> = sqlx::query_as(
-        r#"SELECT a.name, p.status, p.repo, p.branch, p.activity, p.updated_at,
-                      COALESCE(p.expires_at > now(), false)
-               FROM agents a LEFT JOIN agent_presence p ON p.agent_id = a.id
-               WHERE a.team_id = $1 AND a.disabled_at IS NULL
-               ORDER BY COALESCE(p.expires_at > now(), false) DESC, a.name"#,
-    )
-    .bind(auth.team_id)
-    .fetch_all(pool)
-    .await?;
-
-    // Tasks: claimed and open first, then latest done.
-    let tasks: Vec<(
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        bool,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
-        r#"SELECT t.key, t.title, t.status, cb.name, t.result,
-                      EXISTS (SELECT 1 FROM task_deps td
-                              JOIN tasks d ON d.id = td.blocked_by_task_id
-                              WHERE td.task_id = t.id
-                                AND d.status NOT IN ('done','cancelled')) AS blocked,
-                      t.updated_at
-               FROM tasks t LEFT JOIN agents cb ON cb.id = t.claimed_by
-               WHERE t.team_id = $1
-               ORDER BY CASE t.status WHEN 'claimed' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
-                        t.updated_at DESC
-               LIMIT 30"#,
-    )
-    .bind(auth.team_id)
-    .fetch_all(pool)
-    .await?;
-
-    // Channel tail (team-visible only; DMs never appear here).
-    let messages: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as(
-            r#"SELECT m.id, ch.name, s.name, left(m.body, 240), m.created_at
-           FROM messages m
-           JOIN channels ch ON ch.id = m.channel_id
-           JOIN agents s ON s.id = m.sender_agent_id
-           WHERE m.team_id = $1
-           ORDER BY m.id DESC LIMIT 20"#,
-        )
-        .bind(auth.team_id)
-        .fetch_all(pool)
-        .await?;
-
-    let locks: Vec<(
-        String,
-        String,
-        Option<String>,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
-        r#"SELECT l.name, a.name, l.purpose, l.expires_at
-           FROM locks l JOIN agents a ON a.id = l.holder_agent_id
-           WHERE l.team_id = $1 AND l.expires_at > now() ORDER BY l.name"#,
-    )
-    .bind(auth.team_id)
-    .fetch_all(pool)
-    .await?;
-
-    let notes: Vec<(
-        String,
-        String,
-        Option<String>,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
-        r#"SELECT n.scope, n.key, a.name, n.updated_at
-           FROM notes n LEFT JOIN agents a ON a.id = n.updated_by
-           WHERE n.team_id = $1 ORDER BY n.updated_at DESC LIMIT 15"#,
-    )
-    .bind(auth.team_id)
-    .fetch_all(pool)
-    .await?;
-
-    // ---- render ----
     let mut agent_rows = String::new();
-    for (name, status, repo, branch, activity, updated, online) in &agents {
+    for a in &agents {
         // Status: icon + label, never color alone.
-        let (dot, label) = if *online {
-            match status.as_deref() {
+        let (dot, label) = if a.online {
+            match a.status.as_deref() {
                 Some("blocked") => (
                     "<span class=\"st st-serious\">●</span> ⛔ blocked",
                     "blocked",
@@ -349,63 +252,63 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
             ("<span class=\"st st-muted\">●</span> ○ offline", "offline")
         };
         let _ = label;
-        let place = match (repo, branch) {
+        let place = match (&a.repo, &a.branch) {
             (Some(r), Some(b)) => format!("{}@{}", esc(r), esc(b)),
             (Some(r), None) => esc(r),
             _ => String::new(),
         };
         agent_rows.push_str(&format!(
             "<tr><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td class=\"muted\">{}</td></tr>",
-            esc(name),
+            esc(&a.name),
             dot,
             place,
-            esc(activity.as_deref().unwrap_or("")),
-            updated.map(ago).unwrap_or_default(),
+            esc(a.activity.as_deref().unwrap_or("")),
+            a.updated_at.map(ago).unwrap_or_default(),
         ));
     }
 
     let mut task_rows = String::new();
-    for (key, title, status, holder, result, blocked, updated) in &tasks {
-        let badge = match status.as_str() {
+    for t in &tasks {
+        let badge = match t.status.as_str() {
             "done" => "<span class=\"st st-good\">●</span> ✓ done".to_string(),
             "claimed" => format!(
                 "<span class=\"st st-warning\">●</span> ⚙ claimed by {}",
-                esc(holder.as_deref().unwrap_or("?"))
+                esc(t.claimed_by.as_deref().unwrap_or("?"))
             ),
             "cancelled" => "<span class=\"st st-muted\">●</span> ✕ cancelled".to_string(),
-            _ if *blocked => "<span class=\"st st-serious\">●</span> ⛔ blocked".to_string(),
+            _ if t.blocked => "<span class=\"st st-serious\">●</span> ⛔ blocked".to_string(),
             _ => "<span class=\"st st-muted\">●</span> ◌ open".to_string(),
         };
-        let detail = result.as_deref().unwrap_or("");
+        let detail = t.result.as_deref().unwrap_or("");
         task_rows.push_str(&format!(
             "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td class=\"muted\">{}</td></tr>",
-            esc(key),
-            esc(title),
+            esc(&t.key),
+            esc(&t.title),
             badge,
             esc(detail),
-            ago(*updated),
+            ago(t.updated_at),
         ));
     }
 
     let mut msg_rows = String::new();
-    for (_, channel, sender, body, at) in messages.iter().rev() {
+    for m in messages.iter().rev() {
         msg_rows.push_str(&format!(
             "<tr><td class=\"muted\">{}</td><td>#{}</td><td><strong>{}</strong></td><td>{}</td></tr>",
-            ago(*at),
-            esc(channel),
-            esc(sender),
-            esc(body),
+            ago(m.created_at),
+            esc(&m.channel),
+            esc(&m.sender),
+            esc(&m.body),
         ));
     }
 
     let mut lock_rows = String::new();
-    for (name, holder, purpose, expires) in &locks {
+    for l in &locks {
         lock_rows.push_str(&format!(
             "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td class=\"muted\">expires {}</td></tr>",
-            esc(name),
-            esc(holder),
-            esc(purpose.as_deref().unwrap_or("")),
-            ago(*expires).replace(" ago", ""),
+            esc(&l.name),
+            esc(&l.holder),
+            esc(l.purpose.as_deref().unwrap_or("")),
+            ago(l.expires_at).replace(" ago", ""),
         ));
     }
     if locks.is_empty() {
@@ -413,13 +316,13 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
     }
 
     let mut note_rows = String::new();
-    for (scope, key, by, at) in &notes {
+    for n in &notes {
         note_rows.push_str(&format!(
             "<tr><td class=\"muted\">{}</td><td><code>{}/{}</code></td><td>{}</td></tr>",
-            ago(*at),
-            esc(scope),
-            esc(key),
-            esc(by.as_deref().unwrap_or("")),
+            ago(n.updated_at),
+            esc(&n.scope),
+            esc(&n.key),
+            esc(n.updated_by.as_deref().unwrap_or("")),
         ));
     }
 
@@ -499,7 +402,7 @@ code {{ background: transparent; color: inherit; }}
 <table>{note_rows}</table>
 </body>
 </html>"##,
-        team = esc(&auth.team_slug),
+        team = esc(&team),
         viewer = esc(&auth.agent_name),
     ))
 }
