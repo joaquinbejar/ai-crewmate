@@ -11,6 +11,7 @@
 # though the files live under Docker/.
 COMPOSE      = docker compose --project-directory . -f Docker/docker-compose.yml
 COMPOSE_DEV  = $(COMPOSE) -f Docker/docker-compose.dev.yml
+COMPOSE_PROD = $(COMPOSE) -f Docker/docker-compose.prod.yml
 STACK       ?= crew
 
 TEST_PG_NAME  = ai-crew-sync-test-pg
@@ -52,10 +53,22 @@ lint: ## Clippy with warnings as errors, all targets
 lint-fix: ## Apply the clippy fixes that are machine-applicable
 	cargo clippy --fix --all-targets --allow-dirty -- -D warnings
 
+# The local files must render from their defaults alone. The production
+# overlay must NOT: it is required to refuse until the operator supplies real
+# values, so `validate` asserts that refusal instead of passing it by.
 .PHONY: validate
-validate: ## Render both compose files (shape check; every variable has a default)
+validate: ## Render every compose shape: local renders, production refuses without secrets
 	@$(COMPOSE) config -q && echo "  ok  Docker/docker-compose.yml"
 	@$(COMPOSE_DEV) config -q && echo "  ok  + Docker/docker-compose.dev.yml"
+	@if env -u POSTGRES_PASSWORD -u BUS_VERSION -u BUS_ALLOWED_HOSTS \
+			-u BUS_DASHBOARD_SECRET $(COMPOSE_PROD) --env-file /dev/null config -q 2>/dev/null; then \
+		echo "  FAIL  the production overlay rendered without its required values"; exit 1; \
+	else \
+		echo "  ok  + docker-compose.prod.yml refuses to render unset"; \
+	fi
+	@POSTGRES_PASSWORD=x BUS_VERSION=0.0.0 BUS_ALLOWED_HOSTS=bus.example.com \
+		BUS_DASHBOARD_SECRET=y $(COMPOSE_PROD) config -q \
+		&& echo "  ok  + docker-compose.prod.yml renders when set"
 
 # A knob nobody can discover is a knob nobody can set. Every variable the
 # server, the compose files, the client or the plugin reads must appear in
@@ -124,9 +137,44 @@ ps: ## Show stack state
 logs: ## Follow stack logs
 	$(COMPOSE) logs -f
 
+# Preflight before the cluster, not after: compose's ${VAR:?...} already
+# refuses to render, and these checks catch the values that are *set* but
+# wrong — the laptop default, or a moving tag that makes a rolling restart
+# non-deterministic.
+.PHONY: deploy-check
+deploy-check: ## Verify production values are present and safe (no cluster contact)
+	@fail=0; \
+	if [ -z "$$POSTGRES_PASSWORD" ]; then \
+		echo "POSTGRES_PASSWORD is not set"; fail=1; \
+	elif [ "$$POSTGRES_PASSWORD" = "change-me" ]; then \
+		echo "POSTGRES_PASSWORD is still the example value"; fail=1; \
+	fi; \
+	case "$${BUS_VERSION:-}" in \
+		"")     echo "BUS_VERSION is not set (pin an immutable tag)"; fail=1 ;; \
+		latest) echo "BUS_VERSION must be immutable, not 'latest'"; fail=1 ;; \
+	esac; \
+	if [ -z "$$BUS_DASHBOARD_SECRET" ]; then \
+		echo "BUS_DASHBOARD_SECRET is not set"; \
+		echo "  (without it, dashboard sessions end at restart and do not work across replicas)"; \
+		fail=1; \
+	fi; \
+	if [ -z "$$BUS_ALLOWED_HOSTS" ]; then \
+		echo "BUS_ALLOWED_HOSTS is not set"; \
+		echo "  (use your hostname, or '*' if a proxy already validates Host)"; \
+		fail=1; \
+	elif [ "$$BUS_ALLOWED_HOSTS" = "*" ]; then \
+		echo "note: BUS_ALLOWED_HOSTS=* is only safe behind a proxy that validates Host"; \
+	fi; \
+	if [ $$fail -ne 0 ]; then \
+		echo ""; \
+		echo "refusing to deploy: fix the above, then re-run"; \
+		exit 1; \
+	fi; \
+	echo "deploy preflight: ok"
+
 .PHONY: deploy
-deploy: ## Deploy to the current Docker Swarm as stack '$(STACK)' -- REACHES A REAL ENVIRONMENT
-	docker stack deploy -c Docker/docker-compose.yml $(STACK)
+deploy: deploy-check ## Deploy to the current Docker Swarm as stack '$(STACK)' -- REACHES A REAL ENVIRONMENT
+	docker stack deploy -c Docker/docker-compose.yml -c Docker/docker-compose.prod.yml $(STACK)
 
 # --- housekeeping -----------------------------------------------------------
 

@@ -57,10 +57,10 @@ BEGIN
       AND p_kind = ANY(w.events)
       AND (p_kind <> 'message' OR w.channel_filter IS NULL OR w.channel_filter = p_channel);
 
-    -- No NOTIFY here on purpose. The same mutation already fires the
-    -- bus_events trigger that every dispatcher is subscribed to, so the wake
-    -- is covered; a second channel nobody LISTENs on would be pure database
-    -- work. The poll interval remains the backstop for retries.
+    IF FOUND THEN
+        -- Wake whichever replica is idle; the poll interval is the backstop.
+        PERFORM pg_notify('webhook_pending', '');
+    END IF;
 END $$;
 
 -- Direct messages never leave the bus. The guard lives here, in the only
