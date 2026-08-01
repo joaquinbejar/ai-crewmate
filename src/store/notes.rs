@@ -10,6 +10,9 @@ use crate::{
 /// A note is the team's durable memory: runbooks and decision records
 /// belong here whole, not truncated.
 const MAX_VALUE_BYTES: usize = 1024 * 1024;
+/// Tags are filters, not content: a bounded handful of short labels.
+const MAX_TAGS: usize = 16;
+const MAX_TAG_BYTES: usize = 64;
 const MAX_LIMIT: i64 = 200;
 
 #[derive(sqlx::FromRow)]
@@ -74,6 +77,15 @@ pub async fn set_note(pool: &PgPool, auth: &AuthCtx, input: SetInput) -> BusResu
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty())
         .collect();
+    if tags.len() > MAX_TAGS {
+        return Err(BusError::invalid(format!(
+            "a note carries at most {MAX_TAGS} tags; got {}",
+            tags.len()
+        )));
+    }
+    for tag in &tags {
+        super::check_text("note tag", tag, MAX_TAG_BYTES)?;
+    }
 
     let (id,): (Uuid,) = sqlx::query_as(
         r#"

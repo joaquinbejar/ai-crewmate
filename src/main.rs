@@ -73,6 +73,19 @@ struct ServeArgs {
     /// Run migrations on startup.
     #[arg(long, env = "BUS_AUTO_MIGRATE", default_value_t = true)]
     auto_migrate: bool,
+
+    /// Largest MCP request body accepted, in bytes. Rejected with 413 before
+    /// the JSON is parsed.
+    #[arg(long, env = "BUS_MAX_REQUEST_BYTES",
+          default_value_t = serve::DEFAULT_MAX_REQUEST_BYTES)]
+    max_request_bytes: usize,
+
+    /// Requests per minute per token, enforced in-process. 0 disables it.
+    /// With several replicas the effective ceiling is per replica — put a
+    /// hard global limit in the reverse proxy.
+    #[arg(long, env = "BUS_RATE_LIMIT_PER_MINUTE",
+          default_value_t = serve::DEFAULT_RATE_LIMIT_PER_MINUTE)]
+    rate_limit_per_minute: u32,
 }
 
 #[derive(Subcommand)]
@@ -229,6 +242,8 @@ async fn main() -> anyhow::Result<()> {
                     bind: args.bind,
                     allowed_hosts,
                     allowed_origins: split_csv(&args.allowed_origins),
+                    max_request_bytes: args.max_request_bytes,
+                    rate_limit_per_minute: args.rate_limit_per_minute,
                 },
             )
             .await?;

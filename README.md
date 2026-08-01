@@ -270,6 +270,36 @@ Makefile         check / test / up / up-dev / deploy — `make help` lists all
 .claude-plugin/marketplace.json   this repo doubles as a marketplace
 ```
 
+## Limits
+
+Bounded so one runaway agent cannot exhaust the bus. Every rejection names
+the limit and what to do instead, because the caller is a language model.
+
+| Limit | Default | Knob |
+|---|---|---|
+| MCP request body | 8 MiB (413) | `BUS_MAX_REQUEST_BYTES` |
+| Requests per token | 600/min, in-process (429 + `Retry-After`) | `BUS_RATE_LIMIT_PER_MINUTE` |
+| Message body, note value | 1 MiB | — |
+| Attachment | 256 KiB, 8 per message/task | — |
+| `metadata` object | 16 KiB | — |
+| Task title / description / result | 512 B / 64 KiB / 64 KiB | — |
+| Task dependencies | 32 | — |
+| Note tags | 16 tags, 64 B each | — |
+| Channel topic, presence fields | 256 B | — |
+
+Rate limiting is **per process**: the server is stateless by design, so with
+N replicas the effective ceiling is N × the limit. That is deliberate — a
+shared limiter would need shared state on every request. Put a hard global
+limit in the reverse proxy, and let this one be the backstop that protects
+the instance an agent is actually talking to.
+
+Recommended proxy settings when the bus is exposed: cap the request body at
+the same value (`client_max_body_size 8m` in nginx, `request_body_limit` in
+Caddy), rate-limit `/health` and `/dashboard` separately (they are not
+covered by the token limiter — `/health` takes no token), and keep read
+timeouts above 60s so `wait_for_updates` and `ask_agent` long-polls are not
+cut mid-wait.
+
 ## Security
 
 - Always serve behind TLS (Caddy/nginx/Traefik) if it leaves your network.

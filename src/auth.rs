@@ -116,15 +116,37 @@ pub enum AuthError {
     Invalid,
     Disabled,
     Internal,
+    /// Too many requests for this token; carries the seconds to wait.
+    Throttled(u64),
 }
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
+        let retry_after = match self {
+            AuthError::Throttled(secs) => Some(secs),
+            _ => None,
+        };
+        // The consumer is a language model: say what to do, not just what
+        // went wrong.
         let (status, msg) = match self {
-            AuthError::Missing => (StatusCode::UNAUTHORIZED, "missing bearer token"),
-            AuthError::Invalid => (StatusCode::UNAUTHORIZED, "invalid or revoked token"),
-            AuthError::Disabled => (StatusCode::FORBIDDEN, "agent is disabled"),
-            AuthError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            AuthError::Missing => (StatusCode::UNAUTHORIZED, "missing bearer token".to_owned()),
+            AuthError::Invalid => (
+                StatusCode::UNAUTHORIZED,
+                "invalid or revoked token".to_owned(),
+            ),
+            AuthError::Disabled => (StatusCode::FORBIDDEN, "agent is disabled".to_owned()),
+            AuthError::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_owned(),
+            ),
+            AuthError::Throttled(secs) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "rate limit exceeded for this token; retry in {secs}s. \
+                     If you are polling, use wait_for_updates (it blocks until \
+                     something happens) instead of calling in a loop."
+                ),
+            ),
         };
         let body = serde_json::json!({ "error": msg });
         let mut resp = (status, axum::Json(body)).into_response();
@@ -134,15 +156,29 @@ impl IntoResponse for AuthError {
                 axum::http::HeaderValue::from_static("Bearer"),
             );
         }
+        if let Some(secs) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string())
+        {
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
         resp
     }
 }
 
-/// Axum middleware: validates `Authorization: Bearer <token>` and inserts the
-/// resulting [`AuthCtx`] into the request extensions, where rmcp tool handlers
-/// pick it up via `RequestContext -> http::request::Parts -> extensions`.
+/// State for [`require_bearer`]: the pool plus the optional rate limiter.
+#[derive(Clone)]
+pub struct AuthState {
+    pub pool: PgPool,
+    pub limiter: Option<crate::ratelimit::RateLimiter>,
+}
+
+/// Axum middleware: validates the bearer token, charges the per-token rate
+/// limit, and inserts the resulting [`AuthCtx`] into the request extensions,
+/// where rmcp tool handlers pick it up via
+/// `RequestContext -> http::request::Parts -> extensions`.
 pub async fn require_bearer(
-    State(pool): State<PgPool>,
+    State(state): State<AuthState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, AuthError> {
@@ -159,7 +195,15 @@ pub async fn require_bearer(
         .ok_or(AuthError::Missing)?
         .to_owned();
 
-    let ctx = resolve_token(&pool, &raw).await?;
+    // Charge the bucket on the token's hash before touching the database, so
+    // a flood of invalid tokens costs no query either.
+    if let Some(limiter) = &state.limiter
+        && let Err(throttled) = limiter.check(&hex::encode(hash_token(&raw)))
+    {
+        return Err(AuthError::Throttled(throttled.retry_after_secs));
+    }
+
+    let ctx = resolve_token(&state.pool, &raw).await?;
     tracing::debug!(agent = %ctx.agent_name, team = %ctx.team_slug, "authenticated");
     req.extensions_mut().insert(ctx);
     Ok(next.run(req).await)

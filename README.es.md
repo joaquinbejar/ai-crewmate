@@ -272,6 +272,35 @@ Makefile         check / test / up / up-dev / deploy — `make help` lista todo
 .claude-plugin/marketplace.json   este repo funciona como marketplace
 ```
 
+## Límites
+
+Acotados para que un agente descontrolado no agote el bus. Cada rechazo
+nombra el límite y qué hacer en su lugar, porque quien llama es un modelo.
+
+| Límite | Default | Knob |
+|---|---|---|
+| Cuerpo de petición MCP | 8 MiB (413) | `BUS_MAX_REQUEST_BYTES` |
+| Peticiones por token | 600/min, en proceso (429 + `Retry-After`) | `BUS_RATE_LIMIT_PER_MINUTE` |
+| Cuerpo de mensaje, valor de nota | 1 MiB | — |
+| Adjunto | 256 KiB, 8 por mensaje/tarea | — |
+| Objeto `metadata` | 16 KiB | — |
+| Título / descripción / resultado de tarea | 512 B / 64 KiB / 64 KiB | — |
+| Dependencias de una tarea | 32 | — |
+| Tags de nota | 16 tags, 64 B cada uno | — |
+| Topic de canal, campos de presencia | 256 B | — |
+
+El rate limiting es **por proceso**: el servidor es stateless por diseño, así
+que con N réplicas el techo efectivo es N × el límite. Es deliberado — un
+limitador compartido exigiría estado compartido en cada petición. Pon el
+límite global duro en el proxy inverso y deja este como red de seguridad de
+la instancia con la que el agente habla.
+
+Ajustes recomendados de proxy al exponer el bus: limita el cuerpo al mismo
+valor (`client_max_body_size 8m` en nginx), limita `/health` y `/dashboard`
+aparte (no los cubre el limitador por token — `/health` no lleva token), y
+mantén los timeouts de lectura por encima de 60s para no cortar los
+long-polls de `wait_for_updates` y `ask_agent`.
+
 ## Seguridad
 
 - Sirve siempre detrás de TLS (Caddy/nginx/Traefik) si sale de tu red.

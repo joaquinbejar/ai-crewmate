@@ -8,6 +8,8 @@ use crate::{
 
 const DEFAULT_TTL_SECS: i64 = 600; // 10 minutes
 const MAX_TTL_SECS: i64 = 86_400;
+/// Repo, branch and activity are a status line, not a log.
+const MAX_PRESENCE_FIELD_BYTES: usize = 256;
 
 pub struct HeartbeatInput {
     pub status: Option<String>,
@@ -36,6 +38,33 @@ pub async fn heartbeat(
         .unwrap_or(DEFAULT_TTL_SECS)
         .clamp(30, MAX_TTL_SECS);
 
+    // Presence is a status line, not a log: bounded so a heartbeat loop
+    // cannot grow the row without limit.
+    let repo = match input.repo.as_deref() {
+        Some(v) => Some(super::check_text(
+            "presence repo",
+            v,
+            MAX_PRESENCE_FIELD_BYTES,
+        )?),
+        None => None,
+    };
+    let branch = match input.branch.as_deref() {
+        Some(v) => Some(super::check_text(
+            "presence branch",
+            v,
+            MAX_PRESENCE_FIELD_BYTES,
+        )?),
+        None => None,
+    };
+    let activity = match input.activity.as_deref() {
+        Some(v) => Some(super::check_text(
+            "presence activity",
+            v,
+            MAX_PRESENCE_FIELD_BYTES,
+        )?),
+        None => None,
+    };
+
     sqlx::query(
         r#"
         INSERT INTO agent_presence (agent_id, status, repo, branch, activity, updated_at, expires_at)
@@ -52,9 +81,9 @@ pub async fn heartbeat(
     )
     .bind(auth.agent_id)
     .bind(&status)
-    .bind(input.repo.as_deref())
-    .bind(input.branch.as_deref())
-    .bind(input.activity.as_deref())
+    .bind(repo.as_deref())
+    .bind(branch.as_deref())
+    .bind(activity.as_deref())
     .bind(ttl as f64)
     .execute(pool)
     .await?;
