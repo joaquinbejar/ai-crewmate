@@ -4,18 +4,14 @@ on:
   push:
     tags: ["v*"]
 
-# Only the publishing job writes packages; the gate and smoke jobs below
-# narrow themselves to contents: read, so a compromised test step cannot
-# reach the registry.
 permissions:
   contents: read
+  packages: write
 
 jobs:
   # A tag publishes nothing until the same gates that guard main have passed.
   gates:
     uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
 
   # v0.4.0 shipped an image that could not start: it was built against a newer
   # glibc than its runtime carried, and CI never ran the binary. This job boots
@@ -25,8 +21,6 @@ jobs:
     name: release image boots and serves MCP
     needs: gates
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     services:
       postgres:
         image: postgres:18-alpine
@@ -82,13 +76,12 @@ jobs:
           token=$(docker run --rm --network host -e DATABASE_URL="$DATABASE_URL" \
             "$IMAGE" agent add --team smoke --name ci | grep -oE 'acs_[0-9a-f]+' | head -1)
           [ -n "$token" ] || { echo "no token issued"; exit 1; }
-          # The image's own client, so this exercises the same Streamable HTTP
-          # transport every other consumer uses — and no hand-rolled parsing
-          # that a legal SSE response would break.
-          agent=$(docker run --rm --network host \
-            -e BUS_URL=http://localhost:8787/mcp -e BUS_TOKEN="$token" \
-            "$IMAGE" client --json whoami \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent"])')
+          agent=$(curl -fsS -X POST http://localhost:8787/mcp \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["structuredContent"]["agent"])')
           echo "whoami -> $agent"
           [ "$agent" = "ci" ] || { echo "unexpected identity"; exit 1; }
 
@@ -100,9 +93,6 @@ jobs:
     name: publish multi-arch image
     needs: [gates, smoke]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3

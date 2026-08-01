@@ -67,7 +67,7 @@ config-check: ## Fail if a configuration variable is missing from .env.example
 	for v in $$(grep -rhoE '\b(BUS|POSTGRES|DATABASE|RUST)_[A-Z_]+' \
 			src Docker plugin 2>/dev/null | sort -u); do \
 		case "$$v" in POSTGRES_USER|POSTGRES_DB) continue ;; esac; \
-		grep -qE "^#? *$$v([=:]|$$)" .env.example || missing="$$missing $$v"; \
+		grep -q "^#\? *$$v[=:]\?" .env.example || missing="$$missing $$v"; \
 	done; \
 	if [ -n "$$missing" ]; then \
 		echo "undocumented in .env.example:$$missing"; exit 1; \

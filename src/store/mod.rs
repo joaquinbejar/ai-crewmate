@@ -18,6 +18,56 @@ pub fn normalize_channel(name: &str) -> String {
     name.trim().trim_start_matches('#').trim().to_lowercase()
 }
 
+/// `metadata` is a structured pointer — an id, a flag, a short label — not a
+/// document. Bodies, notes and attachments are the places built to carry size.
+pub const MAX_METADATA_BYTES: usize = 16 * 1024;
+
+/// Reject an oversized `metadata` object before it reaches the database. The
+/// error names the field and the limit so an LLM caller can trim and retry.
+pub fn check_metadata(field: &str, metadata: Option<&serde_json::Value>) -> BusResult<()> {
+    let Some(value) = metadata else {
+        return Ok(());
+    };
+    // Serialising is the only honest measure of what gets stored. If it
+    // fails we cannot measure the value, so we refuse it — treating an
+    // unmeasurable payload as size zero would bypass the cap in exactly the
+    // case the cap cannot see.
+    let size = serde_json::to_vec(value)
+        .map(|v| v.len())
+        .map_err(|_| BusError::invalid(format!("{field} metadata is not serialisable JSON")))?;
+    if size > MAX_METADATA_BYTES {
+        return Err(BusError::invalid(format!(
+            "{field} metadata is {size} bytes; the limit is {MAX_METADATA_BYTES}. \
+             Keep metadata to identifiers and short labels — put the payload in \
+             the body, a note, or an attachment."
+        )));
+    }
+    Ok(())
+}
+
+/// Trim a free-text field and reject it when it exceeds `max` bytes.
+/// Returns the trimmed value so callers store exactly what was validated.
+///
+/// The raw input is checked as well as the trimmed one: otherwise a caller
+/// could pad a small value with megabytes of whitespace and pass, making the
+/// server do work the limit exists to prevent.
+pub fn check_text(field: &str, value: &str, max: usize) -> BusResult<String> {
+    if value.len() > max {
+        return Err(BusError::invalid(format!(
+            "{field} is {} bytes; the limit is {max}",
+            value.len()
+        )));
+    }
+    let trimmed = value.trim();
+    if trimmed.len() > max {
+        return Err(BusError::invalid(format!(
+            "{field} is {} bytes; the limit is {max}",
+            trimmed.len()
+        )));
+    }
+    Ok(trimmed.to_owned())
+}
+
 pub async fn agent_id_by_name(pool: &PgPool, team_id: Uuid, name: &str) -> BusResult<Uuid> {
     let name = name.trim();
     let row: Option<(Uuid,)> =

@@ -208,6 +208,7 @@ pub async fn post_message(
         }
     }
 
+    super::check_metadata("message", input.metadata.as_ref())?;
     let metadata = input
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
