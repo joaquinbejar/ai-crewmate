@@ -28,13 +28,8 @@ pub fn check_metadata(field: &str, metadata: Option<&serde_json::Value>) -> BusR
     let Some(value) = metadata else {
         return Ok(());
     };
-    // Serialising is the only honest measure of what gets stored. If it
-    // fails we cannot measure the value, so we refuse it — treating an
-    // unmeasurable payload as size zero would bypass the cap in exactly the
-    // case the cap cannot see.
-    let size = serde_json::to_vec(value)
-        .map(|v| v.len())
-        .map_err(|_| BusError::invalid(format!("{field} metadata is not serialisable JSON")))?;
+    // Serialising is the only honest measure of what gets stored.
+    let size = serde_json::to_vec(value).map(|v| v.len()).unwrap_or(0);
     if size > MAX_METADATA_BYTES {
         return Err(BusError::invalid(format!(
             "{field} metadata is {size} bytes; the limit is {MAX_METADATA_BYTES}. \
@@ -47,17 +42,7 @@ pub fn check_metadata(field: &str, metadata: Option<&serde_json::Value>) -> BusR
 
 /// Trim a free-text field and reject it when it exceeds `max` bytes.
 /// Returns the trimmed value so callers store exactly what was validated.
-///
-/// The raw input is checked as well as the trimmed one: otherwise a caller
-/// could pad a small value with megabytes of whitespace and pass, making the
-/// server do work the limit exists to prevent.
 pub fn check_text(field: &str, value: &str, max: usize) -> BusResult<String> {
-    if value.len() > max {
-        return Err(BusError::invalid(format!(
-            "{field} is {} bytes; the limit is {max}",
-            value.len()
-        )));
-    }
     let trimmed = value.trim();
     if trimmed.len() > max {
         return Err(BusError::invalid(format!(

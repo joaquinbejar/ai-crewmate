@@ -24,7 +24,7 @@ pub struct SetNoteArgs {
     /// Short identifier, e.g. "deploy-runbook" or "why-we-dropped-redis".
     pub key: String,
     /// The content. Write it for a teammate's agent reading it cold, with no
-    /// memory of this conversation.
+    /// memory of this conversation. Hard limit 1 MiB.
     pub value: String,
     /// Optional tags for filtering, e.g. ["infra", "postmortem"].
     #[serde(default)]

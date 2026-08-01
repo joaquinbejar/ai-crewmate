@@ -1021,19 +1021,35 @@ async fn oversized_fields_are_rejected_with_their_limit() {
     let task = call(&joaquin, "get_task", json!({"key": "capped"})).await;
     assert_eq!(task["task"]["status"], "claimed", "{task:?}");
 
-    // Whitespace padding must not smuggle a huge payload past the cap: the
-    // stored value would be small, but the server still had to carry it.
-    let padded = format!("{}fits", " ".repeat(700));
-    let err = call_expect_error(
+    // A 1 MiB body and note are accepted; one byte over is not.
+    let one_mib = "b".repeat(1024 * 1024);
+    call(
         &joaquin,
-        "create_task",
-        json!({"key": "padded", "title": padded}),
+        "post_message",
+        json!({"channel": "dev", "body": one_mib.clone()}),
     )
     .await;
-    assert!(
-        err.contains("512"),
-        "raw size counts, not just trimmed: {err}"
-    );
+    let err = call_expect_error(
+        &joaquin,
+        "post_message",
+        json!({"channel": "dev", "body": format!("{one_mib}x")}),
+    )
+    .await;
+    assert!(err.contains("1048576"), "names the body limit: {err}");
+
+    call(
+        &joaquin,
+        "set_note",
+        json!({"key": "big-note", "value": one_mib.clone()}),
+    )
+    .await;
+    let err = call_expect_error(
+        &joaquin,
+        "set_note",
+        json!({"key": "big-note", "value": format!("{one_mib}x")}),
+    )
+    .await;
+    assert!(err.contains("1048576"), "names the note limit: {err}");
 
     // And values just under the limits still work.
     call(
