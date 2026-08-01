@@ -43,6 +43,8 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build the runner's architecture and load it locally
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           file: Docker/Dockerfile
@@ -161,6 +163,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
+          # Ours only. A bare download also pulls the .dockerbuild build
+          # record that build-push-action uploads, and extracting that one
+          # fails the whole step.
+          pattern: ai-crew-sync-*
       # An amd64 runner cannot execute an arm64 binary on its own, and an
       # arm64 package that installs but cannot run is exactly what this job
       # exists to catch.
@@ -270,6 +276,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
+          pattern: ai-crew-sync-*
       - name: Upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
