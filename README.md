@@ -50,7 +50,7 @@ docker pull ghcr.io/joaquinbejar/ai-crew-sync:latest
 
 ```bash
 cp .env.example .env        # set a real POSTGRES_PASSWORD
-docker compose up -d --build
+docker compose up -d   # pulls ghcr.io/joaquinbejar/ai-crew-sync
 ```
 
 The server migrates the database on startup and exposes:

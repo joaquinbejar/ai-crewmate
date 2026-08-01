@@ -50,7 +50,7 @@ docker pull ghcr.io/joaquinbejar/ai-crew-sync:latest
 
 ```bash
 cp .env.example .env        # pon un POSTGRES_PASSWORD real
-docker compose up -d --build
+docker compose up -d   # pulls ghcr.io/joaquinbejar/ai-crew-sync
 ```
 
 El servidor migra la base de datos al arrancar y expone:

@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine3.24
     environment:
       POSTGRES_USER: bus
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -16,7 +16,9 @@ services:
       retries: 10
 
   bus:
-    build: .
+    # Published multi-arch image. To run from source instead:
+    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+    image: ghcr.io/joaquinbejar/ai-crew-sync:${BUS_VERSION:-latest}
     # For a public deployment put a TLS proxy (Caddy, nginx, Traefik) in front
     # and set BUS_ALLOWED_HOSTS to your real hostname.
     environment:
