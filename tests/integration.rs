@@ -1140,6 +1140,137 @@ async fn bounded_fields_reject_oversized_values() {
     let _ = joaquin.cancel().await;
 }
 
+/// The store layer scopes every query by team and the API tests prove the
+/// isolation holds. This one goes underneath both: raw SQL, no helpers, no
+/// application code — the database itself must refuse a cross-team reference.
+#[tokio::test]
+async fn the_database_refuses_cross_team_references() {
+    let h = require_db!("t_teamfk");
+
+    // Two teams with one agent each, plus a channel and a task per team.
+    let team_a: (Uuid,) =
+        sqlx::query_as("INSERT INTO teams (slug, name) VALUES ('a', 'A') RETURNING id")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let team_b: (Uuid,) =
+        sqlx::query_as("INSERT INTO teams (slug, name) VALUES ('b', 'B') RETURNING id")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let agent_a: (Uuid,) =
+        sqlx::query_as("INSERT INTO agents (team_id, name) VALUES ($1, 'a') RETURNING id")
+            .bind(team_a.0)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let agent_b: (Uuid,) =
+        sqlx::query_as("INSERT INTO agents (team_id, name) VALUES ($1, 'b') RETURNING id")
+            .bind(team_b.0)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let channel_a: (Uuid,) =
+        sqlx::query_as("INSERT INTO channels (team_id, name) VALUES ($1, 'dev') RETURNING id")
+            .bind(team_a.0)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let task_a: (Uuid,) = sqlx::query_as(
+        "INSERT INTO tasks (team_id, key, title) VALUES ($1, 'ta', 't') RETURNING id",
+    )
+    .bind(team_a.0)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    let task_b: (Uuid,) = sqlx::query_as(
+        "INSERT INTO tasks (team_id, key, title) VALUES ($1, 'tb', 't') RETURNING id",
+    )
+    .bind(team_b.0)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+
+    // A sender from the other team.
+    let err = sqlx::query(
+        "INSERT INTO messages (team_id, channel_id, sender_agent_id, body) VALUES ($1,$2,$3,'x')",
+    )
+    .bind(team_a.0)
+    .bind(channel_a.0)
+    .bind(agent_b.0)
+    .execute(&h.pool)
+    .await;
+    assert!(err.is_err(), "a sender from another team must be rejected");
+
+    // A channel belonging to the other team.
+    let err = sqlx::query(
+        "INSERT INTO messages (team_id, sender_agent_id, channel_id, body) VALUES ($1,$2,$3,'x')",
+    )
+    .bind(team_b.0)
+    .bind(agent_b.0)
+    .bind(channel_a.0)
+    .execute(&h.pool)
+    .await;
+    assert!(err.is_err(), "another team's channel must be rejected");
+
+    // A direct message addressed across the team boundary.
+    let err = sqlx::query(
+        "INSERT INTO messages (team_id, sender_agent_id, recipient_agent_id, body)
+         VALUES ($1,$2,$3,'x')",
+    )
+    .bind(team_a.0)
+    .bind(agent_a.0)
+    .bind(agent_b.0)
+    .execute(&h.pool)
+    .await;
+    assert!(err.is_err(), "a cross-team DM must be rejected");
+
+    // A lock held by the other team's agent.
+    let err = sqlx::query(
+        "INSERT INTO locks (team_id, name, holder_agent_id, expires_at)
+         VALUES ($1,'x',$2, now() + interval '1 hour')",
+    )
+    .bind(team_a.0)
+    .bind(agent_b.0)
+    .execute(&h.pool)
+    .await;
+    assert!(err.is_err(), "a holder from another team must be rejected");
+
+    // A dependency spanning two teams' tasks.
+    let err = sqlx::query("INSERT INTO task_deps (task_id, blocked_by_task_id) VALUES ($1,$2)")
+        .bind(task_a.0)
+        .bind(task_b.0)
+        .execute(&h.pool)
+        .await;
+    assert!(err.is_err(), "a cross-team dependency must be rejected");
+
+    // An attachment on another team's message.
+    let msg_a: (i64,) = sqlx::query_as(
+        "INSERT INTO messages (team_id, channel_id, sender_agent_id, body)
+         VALUES ($1,$2,$3,'legit') RETURNING id",
+    )
+    .bind(team_a.0)
+    .bind(channel_a.0)
+    .bind(agent_a.0)
+    .fetch_one(&h.pool)
+    .await
+    .expect("a same-team message is still accepted");
+
+    let err = sqlx::query(
+        "INSERT INTO attachments (team_id, message_id, uploader_agent_id, filename, size_bytes, data)
+         VALUES ($1,$2,$3,'f',1,'\\x00')",
+    )
+    .bind(team_b.0)
+    .bind(msg_a.0)
+    .bind(agent_b.0)
+    .execute(&h.pool)
+    .await;
+    assert!(
+        err.is_err(),
+        "an attachment on another team's message must be rejected"
+    );
+}
+
 #[tokio::test]
 async fn oversized_fields_are_rejected_with_their_limit() {
     let h = require_db!("t_caps");
