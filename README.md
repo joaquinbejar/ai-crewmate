@@ -49,9 +49,20 @@ docker pull ghcr.io/joaquinbejar/ai-crew-sync:latest
 ## Quick start (docker-compose)
 
 ```bash
-cp .env.example .env        # set a real POSTGRES_PASSWORD
-docker compose up -d   # pulls ghcr.io/joaquinbejar/ai-crew-sync
+make up      # = docker compose -f Docker/docker-compose.yml up -d (pulls GHCR image)
 ```
+
+Every variable has a sane default; override via the environment or
+`Docker/.env` (start from `Docker/.env.example` — set a real
+`POSTGRES_PASSWORD` for anything not local). `make up-dev` builds from the
+checkout instead. **Docker Swarm** works with the same file:
+
+```bash
+export POSTGRES_PASSWORD=...   # Swarm does not read .env files
+docker stack deploy -c Docker/docker-compose.yml crew   # or: make deploy
+```
+
+The bus is stateless — scale `bus` replicas freely behind the routing mesh.
 
 The server migrates the database on startup and exposes:
 
