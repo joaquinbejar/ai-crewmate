@@ -39,7 +39,89 @@ fn db_url() -> Option<String> {
 struct Harness {
     pool: PgPool,
     base: String,
-    _ct: CancellationToken,
+    ct: CancellationToken,
+    /// Every axum task started for this harness, including replicas.
+    servers: Vec<tokio::task::JoinHandle<()>>,
+    /// The schema this harness owns, so replicas can join it.
+    schema: String,
+}
+
+impl Harness {
+    /// Start another bus instance against the SAME database and schema — the
+    /// production topology: N processes, one Postgres, each with its own
+    /// LISTEN connection and its own in-process event hub.
+    async fn add_replica(&mut self) -> String {
+        let (base, handle) = spawn_server(self.pool.clone(), self.ct.child_token()).await;
+        self.servers.push(handle);
+        base
+    }
+
+    /// Cancel every background task, wait for the servers to actually stop,
+    /// then drop the schema and close the pool — a finished test leaves
+    /// neither a running task nor a table behind.
+    async fn shutdown(mut self) {
+        self.ct.cancel();
+        let servers = std::mem::take(&mut self.servers);
+        for mut handle in servers {
+            // Graceful shutdown is wired to the token; the timeout keeps a
+            // wedged task from hanging the suite. Dropping the JoinHandle
+            // would DETACH the task rather than stop it — the exact leak this
+            // harness exists to prevent — so a timeout aborts it explicitly.
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.is_panic() => panic!("a server task panicked: {e}"),
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    handle.abort();
+                    panic!("a server task did not stop within 5s of cancellation");
+                }
+            }
+        }
+        // Best effort: a failure here must not fail an otherwise green test,
+        // and `setup` drops the schema on the way in regardless.
+        let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.schema))
+            .execute(&self.pool)
+            .await;
+        self.pool.close().await;
+    }
+}
+
+impl Drop for Harness {
+    /// A panicking test never reaches `shutdown`, and a leaked listener would
+    /// keep consuming notifications for the rest of the run.
+    fn drop(&mut self) {
+        self.ct.cancel();
+    }
+}
+
+/// Bind an ephemeral port and serve the bus on it. Returns the base URL and
+/// the server task, which stops when `ct` is cancelled.
+async fn spawn_server(
+    pool: PgPool,
+    ct: CancellationToken,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = build_router(
+        pool,
+        &ServeOptions {
+            bind: String::new(),
+            allowed_hosts: vec![],
+            allowed_origins: vec![],
+            max_request_bytes: ai_crew_sync::serve::DEFAULT_MAX_REQUEST_BYTES,
+            // Off by default in tests: the suite hammers the server far faster
+            // than any real agent, and the limiter has its own tests.
+            rate_limit_per_minute: 0,
+            dashboard_secret: b"test-dashboard-secret".to_vec(),
+        },
+        ct.clone(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move { ct.cancelled().await })
+            .await;
+    });
+    (format!("http://{addr}"), handle)
 }
 
 async fn setup(schema: &str) -> Option<Harness> {
@@ -73,30 +155,14 @@ async fn setup(schema: &str) -> Option<Harness> {
     MIGRATOR.run(&pool).await.expect("migrate");
 
     let ct = CancellationToken::new();
-    let app = build_router(
-        pool.clone(),
-        &ServeOptions {
-            bind: String::new(),
-            allowed_hosts: vec![],
-            allowed_origins: vec![],
-            max_request_bytes: ai_crew_sync::serve::DEFAULT_MAX_REQUEST_BYTES,
-            // Off by default in tests: the suite hammers the server far faster
-            // than any real agent, and the limiter has its own tests.
-            rate_limit_per_minute: 0,
-            dashboard_secret: b"test-dashboard-secret".to_vec(),
-        },
-        ct.child_token(),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
+    let (base, handle) = spawn_server(pool.clone(), ct.child_token()).await;
 
     Some(Harness {
         pool,
-        base: format!("http://{addr}"),
-        _ct: ct,
+        base,
+        ct,
+        servers: vec![handle],
+        schema: schema.to_owned(),
     })
 }
 
@@ -183,7 +249,17 @@ async fn call_expect_error(client: &Client, name: &str, args: Value) -> String {
 /// Same harness, but with the in-process rate limiter enabled — the default
 /// setup disables it so the suite can hammer the server.
 async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
-    let url = db_url()?;
+    let url = match db_url() {
+        Some(url) => url,
+        None => {
+            assert!(
+                !db_required(),
+                "AI_CREW_SYNC_REQUIRE_DB is set but TEST_DATABASE_URL is not: \
+                 this test would have silently passed without a database"
+            );
+            return None;
+        }
+    };
     let pool = PgPoolOptions::new()
         .max_connections(8)
         .after_connect({
@@ -212,6 +288,7 @@ async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
     MIGRATOR.run(&pool).await.expect("migrate");
 
     let ct = CancellationToken::new();
+    let child = ct.child_token();
     let app = build_router(
         pool.clone(),
         &ServeOptions {
@@ -222,18 +299,29 @@ async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
             rate_limit_per_minute: per_minute,
             dashboard_secret: b"test-dashboard-secret".to_vec(),
         },
-        ct.child_token(),
+        child.clone(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move { child.cancelled().await })
+            .await;
     });
     Some(Harness {
         pool,
         base: format!("http://{addr}"),
-        _ct: ct,
+        ct,
+        servers: vec![handle],
+        schema: schema.to_owned(),
     })
+}
+
+/// Skipping is a convenience for a laptop with no database, and a silent
+/// green build everywhere else. `make test` and CI set this, so a broken
+/// Postgres setup fails the run instead of passing zero tests.
+fn db_required() -> bool {
+    std::env::var("AI_CREW_SYNC_REQUIRE_DB").is_ok_and(|v| v != "0")
 }
 
 macro_rules! require_db {
@@ -241,6 +329,12 @@ macro_rules! require_db {
         match setup($schema).await {
             Some(h) => h,
             None => {
+                assert!(
+                    !db_required(),
+                    "AI_CREW_SYNC_REQUIRE_DB is set but TEST_DATABASE_URL is not: \
+                     the integration suite would have silently passed without \
+                     touching a database"
+                );
                 eprintln!("skipping: TEST_DATABASE_URL not set");
                 return;
             }
@@ -1143,6 +1237,106 @@ async fn bounded_fields_reject_oversized_values() {
 /// The store layer scopes every query by team and the API tests prove the
 /// isolation holds. This one goes underneath both: raw SQL, no helpers, no
 /// application code — the database itself must refuse a cross-team reference.
+/// The production topology: two bus processes against one database, each with
+/// its own LISTEN connection and its own in-process event hub. A wakeup must
+/// cross that boundary — an agent long-polling one replica has to hear about a
+/// message posted through the other, or `wait_for_updates` is only correct on
+/// a single-instance deployment.
+#[tokio::test]
+async fn a_wait_on_one_replica_wakes_on_the_other_replicas_write() {
+    let mut h = require_db!("t_replicas");
+    let replica = h.add_replica().await;
+    assert_ne!(replica, h.base, "a genuinely separate instance");
+
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let b = seed_agent(&h.pool, "acme", "marta").await;
+
+    // Marta creates the channel through replica two.
+    let marta = connect(&replica, &b).await;
+    call(&marta, "create_channel", json!({"name": "dev"})).await;
+
+    // Joaquin blocks on replica one.
+    let waiter = {
+        let base = h.base.clone();
+        let token = a.clone();
+        tokio::spawn(async move {
+            let client = connect(&base, &token).await;
+            let started = std::time::Instant::now();
+            let result = call(&client, "wait_for_updates", json!({"timeout_seconds": 20})).await;
+            let _ = client.cancel().await;
+            (result, started.elapsed())
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    call(
+        &marta,
+        "post_message",
+        json!({"channel": "dev", "body": "posted through the other replica"}),
+    )
+    .await;
+
+    let (result, elapsed) = waiter.await.unwrap();
+    assert_eq!(
+        result["woke"], true,
+        "must wake across replicas: {result:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "woken by the NOTIFY, not by the timeout (took {elapsed:?})"
+    );
+
+    // Reading through either instance returns the same state — no per-process
+    // cursor or cache.
+    let joaquin = connect(&h.base, &a).await;
+    let via_one = call(&joaquin, "read_messages", json!({"scope": "dev"})).await;
+    assert_eq!(via_one["messages"].as_array().map(Vec::len), Some(1));
+
+    let _ = joaquin.cancel().await;
+    let _ = marta.cancel().await;
+    h.shutdown().await;
+}
+
+/// A dropped harness must not leave an axum task, a listener or a dispatcher
+/// behind: the suite runs 20+ tests in one process, and leaked listeners would
+/// keep consuming notifications for everyone else.
+#[tokio::test]
+async fn shutdown_stops_the_server_and_its_background_tasks() {
+    let h = require_db!("t_shutdown");
+    let base = h.base.clone();
+    let pool = h.pool.clone();
+    let token = seed_agent(&h.pool, "acme", "joaquin").await;
+
+    // Alive before.
+    let http = reqwest::Client::new();
+    let resp = http.get(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    h.shutdown().await;
+
+    // After shutdown the socket is closed: the request fails to connect
+    // rather than hanging or being served by a task nobody joined.
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        http.get(format!("{base}/health")).send(),
+    )
+    .await
+    .expect("the request must not hang after shutdown");
+    assert!(
+        resp.is_err(),
+        "the server should no longer accept connections"
+    );
+
+    // The pool is closed too, so a query through it fails rather than
+    // silently opening a fresh connection.
+    let seeded = sqlx::query("SELECT 1").execute(&pool).await;
+    assert!(
+        seeded.is_err(),
+        "the harness pool must be closed after shutdown"
+    );
+    assert!(!token.is_empty(), "the agent was seeded before shutdown");
+}
+
 #[tokio::test]
 async fn the_database_refuses_cross_team_references() {
     let h = require_db!("t_teamfk");
