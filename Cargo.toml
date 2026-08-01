@@ -77,3 +77,62 @@ base64 = "0.22"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# ---------------------------------------------------------------- packaging --
+# `.deb` and `.rpm` are built from the musl binary, so neither declares a
+# runtime dependency: the artifact is statically linked and the crate pulls in
+# no C libraries (rustls rather than OpenSSL, and sqlx speaks the Postgres
+# protocol in Rust). That is why the dependency lists below are empty rather
+# than merely short.
+
+[package.metadata.deb]
+maintainer = "Joaquin Bejar <jb@taunais.com>"
+copyright = "2026, Joaquin Bejar <jb@taunais.com>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Coordination bus between a team's AI coding agents — Claude Code, Codex, \
+Cursor or any MCP client — with all state in PostgreSQL. Ships the server, \
+the operator CLI and the console client in one binary."""
+section = "utils"
+priority = "optional"
+depends = ""
+assets = [
+    ["target/release/ai-crew-sync", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/ai-crew-sync/README.md", "644"],
+    ["packaging/ai-crew-sync.env", "etc/ai-crew-sync/ai-crew-sync.env", "600"],
+]
+conf-files = ["/etc/ai-crew-sync/ai-crew-sync.env"]
+maintainer-scripts = "packaging/debian"
+
+[package.metadata.deb.systemd-units]
+unit-name = "ai-crew-sync"
+unit-scripts = "packaging"
+# Installed but not started: the service cannot work until an operator puts a
+# real DATABASE_URL in the environment file.
+enable = false
+start = false
+
+[package.metadata.generate-rpm]
+summary = "MCP coordination bus for a team's AI coding agents"
+license = "MIT"
+assets = [
+    { source = "target/release/ai-crew-sync", dest = "/usr/bin/ai-crew-sync", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/ai-crew-sync/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/ai-crew-sync/LICENSE", mode = "644", doc = true },
+    { source = "packaging/ai-crew-sync.service", dest = "/usr/lib/systemd/system/ai-crew-sync.service", mode = "644" },
+    { source = "packaging/ai-crew-sync.env", dest = "/etc/ai-crew-sync/ai-crew-sync.env", mode = "640", config = "noreplace" },
+]
+
+# cargo-generate-rpm reads `post_install_script`, not a [scripts] table — the
+# table form is silently ignored, which shipped an rpm whose service user was
+# never created. Verified with `rpm -qp --scripts`.
+post_install_script = """
+getent group ai-crew-sync >/dev/null || groupadd --system ai-crew-sync
+getent passwd ai-crew-sync >/dev/null || \
+    useradd --system --gid ai-crew-sync --home-dir /nonexistent \
+            --no-create-home --shell /sbin/nologin ai-crew-sync
+# Readable by the service, by nobody else: it holds the database password.
+chown root:ai-crew-sync /etc/ai-crew-sync/ai-crew-sync.env 2>/dev/null || true
+chmod 640 /etc/ai-crew-sync/ai-crew-sync.env 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+"""

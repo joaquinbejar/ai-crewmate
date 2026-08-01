@@ -1,0 +1,17 @@
+#!/bin/sh
+# Create the unprivileged account the unit runs as, and make the environment
+# file readable by it but by nobody else — it holds the database password.
+set -e
+if [ "$1" = "configure" ]; then
+    if ! getent group ai-crew-sync >/dev/null; then
+        addgroup --system ai-crew-sync
+    fi
+    if ! getent passwd ai-crew-sync >/dev/null; then
+        adduser --system --ingroup ai-crew-sync --no-create-home \
+                --home /nonexistent --shell /usr/sbin/nologin ai-crew-sync
+    fi
+    chown root:ai-crew-sync /etc/ai-crew-sync/ai-crew-sync.env || true
+    chmod 640 /etc/ai-crew-sync/ai-crew-sync.env || true
+fi
+#DEBHELPER#
+exit 0

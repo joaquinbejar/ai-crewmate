@@ -89,6 +89,152 @@ jobs:
         if: always()
         run: docker logs bus || true
 
+  # Static musl binaries: nothing dynamic to mismatch. Building against glibc
+  # on a current runner would link a version Debian 12 and RHEL 9 do not have —
+  # the same class of break that made the v0.4.0 image unable to start, except
+  # it would fail on the user's machine instead of ours.
+  binaries:
+    name: build ${{ matrix.target }}
+    needs: gates
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest, cross: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, cross: true }
+          - { target: x86_64-apple-darwin,        os: macos-latest,  cross: false }
+          - { target: aarch64-apple-darwin,       os: macos-latest,  cross: false }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cargo install cross --git https://github.com/cross-rs/cross --locked
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Archive
+        id: archive
+        run: |
+          name="ai-crew-sync-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/ai-crew-sync" "dist/$name/"
+          cp README.md LICENSE .env.example "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # Homebrew verifies this, and so should anyone downloading by hand.
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 1
+
+  # .deb and .rpm from the musl binaries, then INSTALLED AND RUN inside the
+  # distributions they target. A package that installs and cannot execute is
+  # the failure mode worth spending a job on.
+  packages:
+    name: build and verify os packages
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Install packaging tools
+        run: cargo install cargo-deb cargo-generate-rpm --locked
+
+      - name: Package
+        run: |
+          set -e
+          mkdir -p dist
+          for pair in "x86_64-unknown-linux-musl amd64 x86_64" \
+                      "aarch64-unknown-linux-musl arm64 aarch64"; do
+            set -- $pair; target=$1; deb_arch=$2; rpm_arch=$3
+            # cargo-deb and cargo-generate-rpm read target/release, so put the
+            # cross-built binary where they look.
+            mkdir -p target/release
+            tar -xzf dl/ai-crew-sync-*-"$target"/*.tar.gz -C /tmp
+            cp /tmp/ai-crew-sync-*-"$target"/ai-crew-sync target/release/ai-crew-sync
+            chmod +x target/release/ai-crew-sync
+
+            cargo deb --no-build --no-strip -o "dist/ai-crew-sync_${deb_arch}.deb" \
+              --variant "" 2>/dev/null || \
+              cargo deb --no-build --no-strip -o "dist/ai-crew-sync_${deb_arch}.deb"
+            cargo generate-rpm --payload-compress none \
+              --arch "$rpm_arch" -o "dist/ai-crew-sync.${rpm_arch}.rpm"
+          done
+          ls -la dist
+
+      # The gate: install the real package in the real distribution and run it.
+      - name: Verify the .deb on Debian 12
+        run: |
+          docker run --rm -v "$PWD/dist:/pkg" debian:12 sh -c '
+            set -e
+            dpkg -i /pkg/ai-crew-sync_amd64.deb
+            ai-crew-sync --version
+            test -f /etc/ai-crew-sync/ai-crew-sync.env
+            test -f /lib/systemd/system/ai-crew-sync.service
+            id ai-crew-sync >/dev/null
+            echo "deb: installs, runs, ships its unit and its user"
+          '
+      - name: Verify the .rpm on Rocky Linux 9
+        run: |
+          docker run --rm -v "$PWD/dist:/pkg" rockylinux:9 sh -c '
+            set -e
+            rpm -i /pkg/ai-crew-sync.x86_64.rpm
+            ai-crew-sync --version
+            test -f /etc/ai-crew-sync/ai-crew-sync.env
+            test -f /usr/lib/systemd/system/ai-crew-sync.service
+            id ai-crew-sync >/dev/null
+            echo "rpm: installs, runs, ships its unit and its user"
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: os-packages
+          path: dist/*
+          retention-days: 1
+
+  # Everything verified: attach it to the release people actually download from.
+  publish-assets:
+    name: attach assets to the release
+    needs: packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          find dl -type f \( -name '*.tar.gz' -o -name '*.sha256' \
+                              -o -name '*.deb' -o -name '*.rpm' \) -print0 \
+            | xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY"
+
   docker:
     name: publish multi-arch image
     needs: [gates, smoke]
