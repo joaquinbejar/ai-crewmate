@@ -59,6 +59,17 @@ pub enum ClientCmd {
         #[arg(long)]
         reply_to: Option<i64>,
     },
+    /// Ask a teammate's agent and wait for the answer.
+    Ask {
+        to: String,
+        /// The question. Omit when resuming with --resume-id.
+        question: Option<String>,
+        #[arg(long)]
+        timeout_seconds: Option<i64>,
+        /// Keep waiting on an earlier question (its question_message_id).
+        #[arg(long)]
+        resume_id: Option<i64>,
+    },
     /// Read messages ("all", "inbox", or a channel name).
     Read {
         #[arg(long, default_value = "all")]
@@ -254,6 +265,18 @@ fn to_call(cmd: &ClientCmd) -> Option<(&'static str, Value)> {
         } => (
             "post_message",
             json!({"channel": channel, "to": to, "body": body, "reply_to": reply_to}),
+        ),
+        ClientCmd::Ask {
+            to,
+            question,
+            timeout_seconds,
+            resume_id,
+        } => (
+            "ask_agent",
+            json!({
+                "to": to, "question": question,
+                "timeout_seconds": timeout_seconds, "resume_message_id": resume_id
+            }),
         ),
         ClientCmd::Read {
             scope,
@@ -507,6 +530,15 @@ fn render(cmd: &ClientCmd, value: &Value) {
         ClientCmd::Send { .. } => {
             let m = &value["message"];
             println!("sent [{}] to {}", m["id"], value["delivered_to"]);
+        }
+        ClientCmd::Ask { .. } => {
+            if value["answered"].as_bool() == Some(true) {
+                let a = &value["answer"];
+                println!("{}: {}", field(a, "from"), field(a, "body"));
+            } else {
+                println!("(no answer yet)");
+                println!("{}", field(value, "suggestion"));
+            }
         }
         ClientCmd::ChannelCreate { .. } => {
             println!("channel #{} ready", field(value, "name"));

@@ -14,6 +14,7 @@ tuya, la de cada compañero) se conecta con su propio token y puede:
 | Mensajería (canales + directos, cursores de lectura, búsqueda) | `post_message`, `read_messages`, `search_messages`, `list_channels`, `create_channel` |
 | Coordinación de tareas con leases y **dependencias** (`depends_on`) | `create_task`, `claim_task`, `claim_next_task`, `renew_task_lease`, `release_task`, `complete_task`, `list_tasks`, `get_task` |
 | **Tiempo real**: bloquearse hasta que pase algo relevante (LISTEN/NOTIFY) | `wait_for_updates` |
+| **RPC agente↔agente**: preguntar a un compañero y esperar su respuesta en una llamada | `ask_agent` |
 | **Locks genéricos** con TTL sobre recursos ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
 | Presencia (quién está en qué repo/rama haciendo qué) | `heartbeat`, `list_agents` |
 | Memoria compartida del equipo (notas con historial) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
@@ -102,8 +103,8 @@ El plugin trae todo preconfigurado:
   8 h — configurable con `BUS_DIGEST_HOURS`); tras cada respuesta renueva la
   presencia con el repo/rama del checkout, y al cerrar sesión marca `idle`.
   Si `BUS_URL`/`BUS_TOKEN` no están definidos, los hooks no hacen nada.
-- **Comandos**: `/crewmate:standup [horas]`, `/crewmate:catchup [horas]` y
-  `/crewmate:announce [#canal] mensaje`.
+- **Comandos**: `/crewmate:standup [horas]`, `/crewmate:catchup [horas]`,
+  `/crewmate:announce [#canal] mensaje` y `/crewmate:ask <agente> <pregunta>`.
 - **Skill** con las convenciones (reclamar antes de trabajar, locks para
   deploys, `wait_for_updates` para esperar respuestas), que Claude carga solo
   cuando toca coordinarse.
@@ -159,6 +160,7 @@ ai-crewmate client task claim refactor-auth
 ai-crewmate client task done refactor-auth --result "merged en #421"
 ai-crewmate client lock acquire deploy:staging --purpose "sacando 1.4.2"
 ai-crewmate client lock release deploy:staging
+ai-crewmate client ask marta "¿staging lleva pg16?"   # DM + espera, una llamada
 ai-crewmate client wait --timeout-seconds 55   # bloquea hasta que pase algo
 ai-crewmate client digest --hours 24           # resumen para el standup
 ai-crewmate client note set why-no-redis --scope api --value "..." --tags infra

@@ -21,8 +21,9 @@ This machine is connected to a shared coordination bus (MCP server `crewmate`) u
 
 ## Communicating
 - Direct question to one teammate → DM via `post_message` with `to`; broadcast → channel message. Prefix with a clear subject.
-- Need an answer to continue → send the message, then `wait_for_updates` (long-poll) instead of finishing the turn; you will wake when the reply lands.
-- When a message asks something of you, answer it before starting new work of your own.
+- Need an answer from a specific teammate to continue → `ask_agent`: it sends the DM and waits for the reply in one call. On timeout, retry once with `resume_message_id` before falling back to other work.
+- When a DM marked `"question": true` arrives, its sender's agent is blocked waiting on you: answer it first, with `post_message` (`to` the asker, `reply_to` the question id).
+- When any other message asks something of you, answer it before starting new work of your own.
 
 ## Finishing
 - `complete_task` with a short result summary (or `release_task` with a reason if you are abandoning it).

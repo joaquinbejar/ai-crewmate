@@ -234,6 +234,22 @@ pub struct WaitResult {
     pub suggestion: String,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AskResult {
+    /// True when the teammate answered before the timeout.
+    pub answered: bool,
+    /// The agent the question was addressed to.
+    pub to: String,
+    /// Id of the question message. On timeout, pass it back as
+    /// `resume_message_id` to keep waiting without re-sending the question.
+    pub question_message_id: i64,
+    /// The answer: their reply to the question, or failing that their first
+    /// direct message to you after it.
+    pub answer: Option<MessageInfo>,
+    /// What to do next.
+    pub suggestion: String,
+}
+
 // ----------------------------------------------------------------- digest --
 
 #[derive(Debug, Serialize, JsonSchema)]

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use rmcp::{
     ErrorData, Json, handler::server::wrapper::Parameters, service::RequestContext, tool,
     tool_router,
@@ -7,9 +9,12 @@ use serde::Deserialize;
 
 use super::{Bus, auth_of};
 use crate::{
-    model::{ChannelInfo, ChannelList, MessageList, PostMessageResult},
-    store::messaging,
+    model::{AskResult, ChannelInfo, ChannelList, MessageList, PostMessageResult},
+    store::{agent_id_by_name, messaging},
 };
+
+const ASK_DEFAULT_TIMEOUT_SECS: i64 = 45;
+const ASK_MAX_TIMEOUT_SECS: i64 = 55;
 
 fn default_limit() -> i64 {
     50
@@ -62,6 +67,24 @@ pub struct ReadMessagesArgs {
     /// Maximum messages to return (1-200).
     #[serde(default = "default_limit")]
     pub limit: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AskAgentArgs {
+    /// Agent handle to ask. Use list_agents to see who is around.
+    pub to: String,
+    /// The question, sent as a direct message. Omit when resuming with
+    /// `resume_message_id`.
+    #[serde(default)]
+    pub question: Option<String>,
+    /// How long to wait for the answer, in seconds (5-55, default 45).
+    /// Kept under a minute so HTTP intermediaries do not cut the call.
+    #[serde(default)]
+    pub timeout_seconds: Option<i64>,
+    /// Keep waiting on an earlier question instead of sending a new one:
+    /// pass the `question_message_id` from a timed-out ask_agent call.
+    #[serde(default)]
+    pub resume_message_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -142,6 +165,136 @@ impl Bus {
         Ok(Json(
             messaging::read_messages(&self.db, &auth, input).await?,
         ))
+    }
+
+    #[tool(
+        description = "Ask a teammate's agent a question and block until they answer or the \
+                       timeout passes. Sends the question as a direct message and waits for \
+                       their reply, so one call replaces post_message + wait_for_updates + \
+                       read_messages. On timeout, call it again with `resume_message_id` set \
+                       to the returned question_message_id to keep waiting without asking \
+                       twice. If you receive a question yourself, answer with post_message \
+                       (`to` the asker, `reply_to` the question id)."
+    )]
+    async fn ask_agent(
+        &self,
+        ctx: RequestContext<rmcp::RoleServer>,
+        Parameters(args): Parameters<AskAgentArgs>,
+    ) -> Result<Json<AskResult>, ErrorData> {
+        let auth = auth_of(&ctx)?;
+        let to = args.to.trim().to_owned();
+        let timeout = args
+            .timeout_seconds
+            .unwrap_or(ASK_DEFAULT_TIMEOUT_SECS)
+            .clamp(5, ASK_MAX_TIMEOUT_SECS);
+
+        let target_id = agent_id_by_name(&self.db, auth.team_id, &to).await?;
+        if target_id == auth.agent_id {
+            return Err(crate::error::BusError::invalid(
+                "you cannot ask yourself; call list_agents and pick a teammate",
+            )
+            .into());
+        }
+
+        // Subscribe before posting or checking so an answer arriving in
+        // between still wakes us.
+        let mut rx = self.hub.subscribe();
+
+        let question_id = match args.resume_message_id {
+            Some(id) => {
+                messaging::verify_question(&self.db, &auth, target_id, id).await?;
+                id
+            }
+            None => {
+                let question = args
+                    .question
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
+                    .ok_or_else(|| {
+                        crate::error::BusError::invalid(
+                            "provide `question`, or `resume_message_id` to keep waiting on \
+                             an earlier one",
+                        )
+                    })?;
+                let posted = messaging::post_message(
+                    &self.db,
+                    &auth,
+                    messaging::PostInput {
+                        channel: None,
+                        to: Some(to.clone()),
+                        body: question.to_owned(),
+                        reply_to: None,
+                        metadata: Some(serde_json::json!({ "question": true })),
+                    },
+                )
+                .await?;
+                posted.message.id
+            }
+        };
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout as u64);
+        loop {
+            // Check the database first: covers resumed asks whose answer
+            // already landed, and events lost while lagging.
+            if let Some(answer) =
+                messaging::find_answer(&self.db, &auth, target_id, question_id).await?
+            {
+                return Ok(Json(AskResult {
+                    answered: true,
+                    to,
+                    question_message_id: question_id,
+                    answer: Some(answer),
+                    suggestion: "The answer also sits unread in your inbox; read_messages \
+                                 will mark it read."
+                        .into(),
+                }));
+            }
+
+            // Wait for a direct message from the target (or the deadline).
+            let woke = loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => break false,
+                    recv = rx.recv() => match recv {
+                        Ok(ev) => {
+                            if ev.kind() == "message"
+                                && ev.sender_agent_id() == Some(target_id)
+                                && ev.recipient_agent_id() == Some(auth.agent_id)
+                            {
+                                break true;
+                            }
+                        }
+                        // Lagged: events were dropped; resync from the database.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break true,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break false,
+                    }
+                }
+            };
+
+            if !woke {
+                // One last look: the answer may have raced the deadline.
+                let answer =
+                    messaging::find_answer(&self.db, &auth, target_id, question_id).await?;
+                let answered = answer.is_some();
+                return Ok(Json(AskResult {
+                    answered,
+                    suggestion: if answered {
+                        "The answer also sits unread in your inbox; read_messages will \
+                         mark it read."
+                            .into()
+                    } else {
+                        format!(
+                            "{to} has not answered within {timeout}s. Call ask_agent again \
+                             with resume_message_id={question_id} to keep waiting without \
+                             re-sending, or do other work and check read_messages later."
+                        )
+                    },
+                    to,
+                    question_message_id: question_id,
+                    answer,
+                }));
+            }
+        }
     }
 
     #[tool(

@@ -55,6 +55,11 @@ Four capabilities:
   polling: it blocks until a relevant message/task/lock/note event arrives or
   the timeout passes. `team_digest` summarises the last hours of team activity —
   useful at session start to catch up.
+- Asking. When you need an answer from a specific teammate to continue,
+  `ask_agent` sends them the question and waits for the reply in one call. If
+  you receive a question (a direct message marked `"question": true`), answer
+  promptly with `post_message` (`to` the asker, `reply_to` the question id) —
+  their agent is blocked waiting on you.
 
 Conventions worth following: keep messages short and factual, scope notes by
 repository name, and use task keys that a human would recognise.

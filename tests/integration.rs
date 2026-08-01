@@ -261,6 +261,7 @@ async fn tools_are_advertised_with_schemas() {
         "list_channels",
         "create_channel",
         "search_messages",
+        "ask_agent",
         "create_task",
         "claim_task",
         "claim_next_task",
@@ -850,6 +851,106 @@ async fn wait_for_updates_wakes_on_a_teammates_message() {
     // With unread messages already pending, the wait returns immediately.
     let instant = call(&joaquin, "wait_for_updates", json!({"timeout_seconds": 30})).await;
     assert_eq!(instant["woke"], true);
+
+    let _ = joaquin.cancel().await;
+    let _ = marta.cancel().await;
+}
+
+#[tokio::test]
+async fn ask_agent_returns_the_teammates_answer() {
+    let h = require_db!("t_ask");
+    let a = seed_agent(&h.pool, "acme", "joaquin").await;
+    let b = seed_agent(&h.pool, "acme", "marta").await;
+    let joaquin = connect(&h.base, &a).await;
+    let marta = connect(&h.base, &b).await;
+
+    // Joaquin asks and blocks; Marta reads the question and replies to it.
+    let asker = {
+        let base = h.base.clone();
+        let token = a.clone();
+        tokio::spawn(async move {
+            let client = connect(&base, &token).await;
+            let started = std::time::Instant::now();
+            let result = call(
+                &client,
+                "ask_agent",
+                json!({"to": "marta", "question": "does staging run pg16?", "timeout_seconds": 20}),
+            )
+            .await;
+            let _ = client.cancel().await;
+            (result, started.elapsed())
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let inbox = call(&marta, "read_messages", json!({"scope": "inbox"})).await;
+    let question = inbox["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        question["metadata"]["question"], true,
+        "the question DM is marked as such: {question:?}"
+    );
+    call(
+        &marta,
+        "post_message",
+        json!({"to": "joaquin", "body": "yes, since yesterday", "reply_to": question["id"]}),
+    )
+    .await;
+
+    let (result, elapsed) = asker.await.unwrap();
+    assert_eq!(result["answered"], true, "{result:?}");
+    assert_eq!(result["answer"]["from"], "marta");
+    assert_eq!(result["answer"]["body"], "yes, since yesterday");
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "answered by event, not by timeout (took {elapsed:?})"
+    );
+
+    // Timeout path: no answer in time, then resume picks up a late answer
+    // that was sent without reply_to (lenient matching).
+    let timed = call(
+        &joaquin,
+        "ask_agent",
+        json!({"to": "marta", "question": "and prod?", "timeout_seconds": 5}),
+    )
+    .await;
+    assert_eq!(timed["answered"], false, "{timed:?}");
+    let qid = timed["question_message_id"].as_i64().unwrap();
+    assert!(
+        timed["suggestion"]
+            .as_str()
+            .unwrap()
+            .contains(&qid.to_string()),
+        "timeout suggestion tells how to resume: {timed:?}"
+    );
+
+    call(
+        &marta,
+        "post_message",
+        json!({"to": "joaquin", "body": "prod is still on pg15"}),
+    )
+    .await;
+    let resumed = call(
+        &joaquin,
+        "ask_agent",
+        json!({"to": "marta", "resume_message_id": qid, "timeout_seconds": 5}),
+    )
+    .await;
+    assert_eq!(resumed["answered"], true, "{resumed:?}");
+    assert_eq!(resumed["answer"]["body"], "prod is still on pg15");
+
+    // Asking yourself is refused.
+    let err = call_expect_error(
+        &joaquin,
+        "ask_agent",
+        json!({"to": "joaquin", "question": "hi"}),
+    )
+    .await;
+    assert!(err.contains("yourself"), "{err}");
 
     let _ = joaquin.cancel().await;
     let _ = marta.cancel().await;

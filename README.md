@@ -14,6 +14,7 @@ instances of a team**, with all state in Postgres. Each Claude Code instance
 | Messaging (channels + DMs, read cursors, search) | `post_message`, `read_messages`, `search_messages`, `list_channels`, `create_channel` |
 | Task coordination with leases and **dependencies** (`depends_on`) | `create_task`, `claim_task`, `claim_next_task`, `renew_task_lease`, `release_task`, `complete_task`, `list_tasks`, `get_task` |
 | **Real time**: block until something relevant happens (LISTEN/NOTIFY) | `wait_for_updates` |
+| **Agent↔agent RPC**: ask a teammate and wait for their answer in one call | `ask_agent` |
 | **Generic locks** with TTL over resources ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
 | Presence (who is on which repo/branch doing what) | `heartbeat`, `list_agents` |
 | Shared team memory (notes with history) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
@@ -103,8 +104,8 @@ The plugin comes fully preconfigured:
   with `BUS_DIGEST_HOURS`); after each response it renews presence with the
   checkout's repo/branch, and on session end it marks `idle`. If
   `BUS_URL`/`BUS_TOKEN` are not defined, the hooks do nothing.
-- **Commands**: `/crewmate:standup [hours]`, `/crewmate:catchup [hours]` and
-  `/crewmate:announce [#channel] message`.
+- **Commands**: `/crewmate:standup [hours]`, `/crewmate:catchup [hours]`,
+  `/crewmate:announce [#channel] message` and `/crewmate:ask <agent> <question>`.
 - **Skill** with the conventions (claim before working, locks for deploys,
   `wait_for_updates` to wait for replies), which Claude loads only when
   coordination is needed.
@@ -160,6 +161,7 @@ ai-crewmate client task claim refactor-auth
 ai-crewmate client task done refactor-auth --result "merged in #421"
 ai-crewmate client lock acquire deploy:staging --purpose "shipping 1.4.2"
 ai-crewmate client lock release deploy:staging
+ai-crewmate client ask marta "does staging run pg16?"   # DM + wait, one call
 ai-crewmate client wait --timeout-seconds 55   # blocks until something happens
 ai-crewmate client digest --hours 24           # summary for the standup
 ai-crewmate client note set why-no-redis --scope api --value "..." --tags infra

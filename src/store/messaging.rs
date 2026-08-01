@@ -228,6 +228,58 @@ pub async fn post_message(
     })
 }
 
+// ----------------------------------------------------------------- asking --
+
+/// The answer to a question DM: their explicit reply if there is one, else
+/// their first direct message to the asker after the question was sent.
+pub async fn find_answer(
+    pool: &PgPool,
+    auth: &AuthCtx,
+    target_id: Uuid,
+    question_id: i64,
+) -> BusResult<Option<MessageInfo>> {
+    let row: Option<MessageRow> = sqlx::query_as(&format!(
+        r#"{MESSAGE_SELECT}
+           WHERE m.sender_agent_id = $1
+             AND m.recipient_agent_id = $2
+             AND m.id > $3
+           ORDER BY (m.reply_to = $3) DESC NULLS LAST, m.id
+           LIMIT 1"#
+    ))
+    .bind(target_id)
+    .bind(auth.agent_id)
+    .bind(question_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(Into::into))
+}
+
+/// A resumed ask must point at a question the caller actually sent to the
+/// target; anything else means a mixed-up id.
+pub async fn verify_question(
+    pool: &PgPool,
+    auth: &AuthCtx,
+    target_id: Uuid,
+    question_id: i64,
+) -> BusResult<()> {
+    let exists: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM messages
+         WHERE id = $1 AND sender_agent_id = $2 AND recipient_agent_id = $3",
+    )
+    .bind(question_id)
+    .bind(auth.agent_id)
+    .bind(target_id)
+    .fetch_optional(pool)
+    .await?;
+    if exists.is_none() {
+        return Err(BusError::invalid(format!(
+            "message {question_id} is not a question you sent to this agent; \
+             pass the question_message_id returned by ask_agent"
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- reading --
 
 /// Normalised read scope plus the cursor key used to remember the read position.
