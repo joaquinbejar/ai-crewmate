@@ -14,14 +14,36 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
     let hours = hours.clamp(1, 24 * 14);
 
     // Channel activity: volume plus the tail of the conversation.
-    let channel_rows: Vec<(String, i64)> = sqlx::query_as(
+    //
+    // One set-based query, not one per channel. The old shape ran a tail
+    // SELECT for every active channel, so a team with 40 channels paid 41
+    // round trips for one digest — and the cost grew with the team.
+    let channel_rows: Vec<(String, i64, serde_json::Value)> = sqlx::query_as(
         r#"
-        SELECT c.name, count(m.id)
-        FROM channels c
-        JOIN messages m ON m.channel_id = c.id
-        WHERE c.team_id = $1 AND m.created_at > now() - make_interval(hours => $2)
-        GROUP BY c.name
-        ORDER BY count(m.id) DESC
+        WITH windowed AS (
+            SELECT c.name AS channel,
+                   a.name AS sender,
+                   left(m.body, 300) AS body,
+                   m.created_at,
+                   m.id,
+                   count(*) OVER (PARTITION BY c.id) AS message_count,
+                   row_number() OVER (PARTITION BY c.id ORDER BY m.id DESC) AS recency
+            FROM messages m
+            JOIN channels c ON c.id = m.channel_id
+            JOIN agents a   ON a.id = m.sender_agent_id
+            WHERE c.team_id = $1
+              AND m.created_at > now() - make_interval(hours => $2)
+        )
+        SELECT channel,
+               max(message_count) AS message_count,
+               COALESCE(
+                   json_agg(json_build_object('from', sender, 'body', body, 'at', created_at)
+                            ORDER BY id) FILTER (WHERE recency <= 5),
+                   '[]'::json
+               ) AS tail
+        FROM windowed
+        GROUP BY channel
+        ORDER BY max(message_count) DESC
         "#,
     )
     .bind(auth.team_id)
@@ -29,40 +51,35 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
     .fetch_all(pool)
     .await?;
 
-    let mut channels = Vec::with_capacity(channel_rows.len());
-    for (name, message_count) in channel_rows {
-        let tail: Vec<(String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-            r#"
-            SELECT a.name, left(m.body, 300), m.created_at
-            FROM messages m
-            JOIN channels c ON c.id = m.channel_id
-            JOIN agents a ON a.id = m.sender_agent_id
-            WHERE c.team_id = $1 AND c.name = $2
-              AND m.created_at > now() - make_interval(hours => $3)
-            ORDER BY m.id DESC
-            LIMIT 5
-            "#,
-        )
-        .bind(auth.team_id)
-        .bind(&name)
-        .bind(hours as i32)
-        .fetch_all(pool)
-        .await?;
+    #[derive(serde::Deserialize)]
+    struct TailRow {
+        from: String,
+        body: String,
+        at: chrono::DateTime<chrono::Utc>,
+    }
 
-        channels.push(DigestChannel {
-            name,
+    let channels: Vec<DigestChannel> = channel_rows
+        .into_iter()
+        .map(|(name, message_count, tail)| DigestChannel {
+            name: name.clone(),
             message_count,
-            last_messages: tail
+            last_messages: serde_json::from_value::<Vec<TailRow>>(tail)
+                .inspect_err(|e| {
+                    // The digest is still useful without one channel's tail,
+                    // so this does not fail the call — but a silent empty
+                    // tail would look like a quiet channel rather than a bug.
+                    tracing::warn!(channel = %name, error = %e, "could not decode a channel tail");
+                })
+                .unwrap_or_default()
                 .into_iter()
-                .rev()
-                .map(|(from, body, at)| DigestMessage {
-                    from,
-                    body,
-                    at: ts(at),
+                .map(|r| DigestMessage {
+                    from: r.from,
+                    body: r.body,
+                    at: ts(r.at),
                 })
                 .collect(),
-        });
-    }
+        })
+        .collect();
 
     // Tasks that moved in the window.
     let task_rows: Vec<(

@@ -1383,6 +1383,83 @@ async fn webhook_delivery_is_exactly_one_row_per_hook_across_replicas() {
     h.shutdown().await;
 }
 
+/// The digest used to run one tail query per active channel, so a team with
+/// 40 channels paid 41 round trips for one digest and the cost grew with the
+/// team. This pins the property: the work must not scale with channel count.
+///
+/// Measured rather than counted — PostgreSQL exposes no per-connection
+/// statement counter without `pg_stat_statements`, and a database-wide one is
+/// noise when the suite runs tests in parallel. So the test compares the same
+/// digest over few channels and many: an N+1 grows with N, one statement does
+/// not.
+#[tokio::test]
+async fn the_digest_cost_does_not_grow_with_channel_count() {
+    let h = require_db!("t_digest_scale");
+    let token = seed_agent(&h.pool, "acme", "joaquin").await;
+    let client = connect(&h.base, &token).await;
+
+    let seed_channels = |from: usize, to: usize| {
+        let client = &client;
+        async move {
+            for c in from..to {
+                let name = format!("chan{c}");
+                call(client, "create_channel", json!({"name": name})).await;
+                for m in 0..6 {
+                    call(
+                        client,
+                        "post_message",
+                        json!({"channel": name, "body": format!("message {m} in {name}")}),
+                    )
+                    .await;
+                }
+            }
+        }
+    };
+
+    // Warm the connection and the plan cache first, so the first measurement
+    // is not paying for setup.
+    seed_channels(0, 2).await;
+    call(&client, "team_digest", json!({"hours": 24})).await;
+
+    let started = std::time::Instant::now();
+    let small = call(&client, "team_digest", json!({"hours": 24})).await;
+    let small_elapsed = started.elapsed();
+    assert_eq!(small["channels"].as_array().map(Vec::len), Some(2));
+
+    seed_channels(2, 20).await;
+
+    let started = std::time::Instant::now();
+    let large = call(&client, "team_digest", json!({"hours": 24})).await;
+    let large_elapsed = started.elapsed();
+
+    let channels = large["channels"].as_array().expect("channels");
+    assert_eq!(channels.len(), 20, "every channel is reported");
+    for c in channels {
+        let tail = c["last_messages"].as_array().expect("tail");
+        assert!(!tail.is_empty() && tail.len() <= 5, "tail is 1..=5: {c:?}");
+        assert_eq!(c["message_count"], 6, "counts survive the rewrite: {c:?}");
+        // The tail must be chronological, oldest first — the window function
+        // orders by id, and reversing it silently would be easy to miss.
+        let first = tail[0]["body"].as_str().unwrap_or("");
+        assert!(
+            first.contains("message 1"),
+            "oldest of the tail first: {tail:?}"
+        );
+    }
+
+    // Ten times the channels must not cost ten times the digest. The bound is
+    // deliberately loose — this is a shape assertion, not a benchmark — but an
+    // N+1 over 20 channels cannot fit under it.
+    assert!(
+        large_elapsed < small_elapsed * 4 + std::time::Duration::from_millis(50),
+        "digest over 20 channels took {large_elapsed:?} against {small_elapsed:?} over 2: \
+         the cost is scaling with channel count"
+    );
+
+    let _ = client.cancel().await;
+    h.shutdown().await;
+}
+
 /// A dropped harness must not leave an axum task, a listener or a dispatcher
 /// behind: the suite runs 20+ tests in one process, and leaked listeners would
 /// keep consuming notifications for everyone else.

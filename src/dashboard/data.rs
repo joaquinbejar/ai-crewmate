@@ -79,14 +79,45 @@ pub struct Snapshot {
 /// Direct messages are excluded here, at the source, rather than being
 /// filtered later: the rendering layer never receives one, so it cannot leak
 /// one by accident.
+///
+/// The seven queries are independent, so they run concurrently on separate
+/// pool connections rather than one after another — the page refreshes every
+/// 15 seconds, and serialising them made the refresh as slow as their sum.
+/// Each sees its own snapshot, which is correct for a dashboard: the numbers
+/// are already stale by the time they reach a browser, and no derived value
+/// is computed across two of them.
 pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error> {
-    let team: String = sqlx::query_scalar("SELECT slug FROM teams WHERE id = $1")
+    let (team, totals, agents, tasks, messages, locks, notes) = tokio::try_join!(
+        load_team(pool, team_id),
+        load_totals(pool, team_id),
+        load_agents(pool, team_id),
+        load_tasks(pool, team_id),
+        load_messages(pool, team_id),
+        load_locks(pool, team_id),
+        load_notes(pool, team_id),
+    )?;
+
+    Ok(Snapshot {
+        team,
+        totals,
+        agents,
+        tasks,
+        messages,
+        locks,
+        notes,
+    })
+}
+
+async fn load_team(pool: &PgPool, team_id: Uuid) -> Result<String, sqlx::Error> {
+    sqlx::query_scalar("SELECT slug FROM teams WHERE id = $1")
         .bind(team_id)
         .fetch_one(pool)
-        .await?;
+        .await
+}
 
+async fn load_totals(pool: &PgPool, team_id: Uuid) -> Result<Totals, sqlx::Error> {
     // The three stat-tile numbers in one round trip instead of three.
-    let totals: Totals = sqlx::query_as(
+    sqlx::query_as(
         r#"
         SELECT
             (SELECT count(*) FROM agents a
@@ -103,9 +134,11 @@ pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error>
     )
     .bind(team_id)
     .fetch_one(pool)
-    .await?;
+    .await
+}
 
-    let agents: Vec<AgentRow> = sqlx::query_as(
+async fn load_agents(pool: &PgPool, team_id: Uuid) -> Result<Vec<AgentRow>, sqlx::Error> {
+    sqlx::query_as(
         r#"
         SELECT a.name,
                p.status,
@@ -122,10 +155,12 @@ pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error>
     )
     .bind(team_id)
     .fetch_all(pool)
-    .await?;
+    .await
+}
 
-    // Claimed and open first — the work in flight is what a human came to see.
-    let tasks: Vec<TaskRow> = sqlx::query_as(
+/// Claimed and open first — the work in flight is what a human came to see.
+async fn load_tasks(pool: &PgPool, team_id: Uuid) -> Result<Vec<TaskRow>, sqlx::Error> {
+    sqlx::query_as(
         r#"
         SELECT t.key,
                t.title,
@@ -148,11 +183,13 @@ pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error>
     )
     .bind(team_id)
     .fetch_all(pool)
-    .await?;
+    .await
+}
 
-    // The JOIN on channels is what excludes direct messages: a DM has no
-    // channel_id, so it cannot appear here at all.
-    let messages: Vec<MessageRow> = sqlx::query_as(
+/// The JOIN on channels is what excludes direct messages: a DM has no
+/// channel_id, so it cannot appear here at all.
+async fn load_messages(pool: &PgPool, team_id: Uuid) -> Result<Vec<MessageRow>, sqlx::Error> {
+    sqlx::query_as(
         r#"
         SELECT m.id, ch.name AS channel, s.name AS sender, left(m.body, 240) AS body, m.created_at
         FROM messages m
@@ -165,9 +202,11 @@ pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error>
     )
     .bind(team_id)
     .fetch_all(pool)
-    .await?;
+    .await
+}
 
-    let locks: Vec<LockRow> = sqlx::query_as(
+async fn load_locks(pool: &PgPool, team_id: Uuid) -> Result<Vec<LockRow>, sqlx::Error> {
+    sqlx::query_as(
         r#"
         SELECT l.name, a.name AS holder, l.purpose, l.expires_at
         FROM locks l
@@ -178,9 +217,11 @@ pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error>
     )
     .bind(team_id)
     .fetch_all(pool)
-    .await?;
+    .await
+}
 
-    let notes: Vec<NoteRow> = sqlx::query_as(
+async fn load_notes(pool: &PgPool, team_id: Uuid) -> Result<Vec<NoteRow>, sqlx::Error> {
+    sqlx::query_as(
         r#"
         SELECT n.scope, n.key, a.name AS updated_by, n.updated_at
         FROM notes n
@@ -192,15 +233,5 @@ pub async fn load(pool: &PgPool, team_id: Uuid) -> Result<Snapshot, sqlx::Error>
     )
     .bind(team_id)
     .fetch_all(pool)
-    .await?;
-
-    Ok(Snapshot {
-        team,
-        totals,
-        agents,
-        tasks,
-        messages,
-        locks,
-        notes,
-    })
+    .await
 }
