@@ -78,6 +78,24 @@ The server migrates the database on startup and exposes:
   `Authorization: Bearer acs_...` directly. Tokens are never accepted in the
   query string — a URL ends up in history, referrers and proxy logs.
 
+### Deploying to production
+
+The base compose file has a working default for everything so `make up` boots
+on a laptop. Production uses an overlay that has **no** defaults:
+
+```bash
+export POSTGRES_PASSWORD=…        # not the example value
+export BUS_VERSION=0.4.1          # immutable, never `latest`
+export BUS_ALLOWED_HOSTS=bus.example.com
+export BUS_DASHBOARD_SECRET=…     # shared, so sessions work across replicas
+make deploy                       # preflight, then docker stack deploy
+```
+
+`make deploy` refuses before contacting the cluster if any of those is
+missing, still the example password, or a moving tag — and compose itself
+will not even render the overlay without them. `make deploy-check` runs the
+preflight alone.
+
 ## Onboard the team
 
 ```bash

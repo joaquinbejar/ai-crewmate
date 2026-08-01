@@ -79,6 +79,23 @@ El servidor migra la base de datos al arrancar y expone:
   token nunca se acepta en la query string — una URL acaba en el historial,
   en los referrers y en los logs del proxy.
 
+### Desplegar en producción
+
+El compose base trae un default que funciona para todo, para que `make up`
+arranque en un portátil. Producción usa un overlay que **no** tiene defaults:
+
+```bash
+export POSTGRES_PASSWORD=…        # no el valor de ejemplo
+export BUS_VERSION=0.4.1          # inmutable, nunca `latest`
+export BUS_ALLOWED_HOSTS=bus.tu-empresa.com
+export BUS_DASHBOARD_SECRET=…     # compartido, para que la sesión valga en cualquier réplica
+make deploy                       # preflight y después docker stack deploy
+```
+
+`make deploy` se niega antes de tocar el clúster si falta alguno, si sigue la
+contraseña de ejemplo o si el tag es móvil — y el propio compose ni siquiera
+renderiza el overlay sin ellos. `make deploy-check` ejecuta solo el preflight.
+
 ## Dar de alta al equipo
 
 ```bash
