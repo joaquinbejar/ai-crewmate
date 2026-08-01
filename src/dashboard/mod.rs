@@ -1,9 +1,11 @@
 //! Read-only HTML dashboard for humans: who is online, what is claimed, what
 //! the channels are saying. Served by the bus itself at `/dashboard`.
 //!
-//! Auth: any agent token of the team, passed as `?token=acs_...` or as an
-//! `Authorization: Bearer` header. Query-param tokens can end up in proxy
-//! logs — acceptable for an internal tool, documented in the README.
+//! Auth: an agent token is presented ONCE — as a form POST to
+//! `/dashboard/login` or an `Authorization: Bearer` header — and exchanged for
+//! a short-lived, read-only, HttpOnly cookie ([`grant`]). Tokens are never
+//! accepted in the query string: a full-privilege credential in a URL leaks
+//! into browser history, copied links, referrer headers and proxy logs.
 //!
 //! Design notes (from the dataviz method): this page is stat tiles + tables,
 //! not charts, so no categorical palette is involved. Status colors are the
@@ -11,8 +13,10 @@
 //! values wear text tokens, never status hues. Light and dark surfaces are the
 //! validated reference pair.
 
+pub mod grant;
+
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
@@ -20,11 +24,6 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::auth::{AuthCtx, resolve_token};
-
-#[derive(Deserialize)]
-pub struct DashboardQuery {
-    token: Option<String>,
-}
 
 /// Escape user content for HTML. Covers the single quote too: every current
 /// interpolation sits in an element body or a double-quoted attribute, but one
@@ -48,45 +47,174 @@ fn ago(ts: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-pub async fn render(
-    State(pool): State<PgPool>,
-    Query(q): Query<DashboardQuery>,
+/// Name of the cookie carrying the read-only grant.
+const COOKIE: &str = "acs_dashboard";
+/// Grants are cheap to re-mint, so keep the window short.
+const GRANT_TTL_SECS: i64 = 3600;
+
+/// Signing key for dashboard grants, plus the page's own state.
+#[derive(Clone)]
+pub struct DashboardState {
+    pub pool: PgPool,
+    pub secret: std::sync::Arc<Vec<u8>>,
+}
+
+#[derive(Deserialize)]
+pub struct LoginForm {
+    token: Option<String>,
+}
+
+fn bearer(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.to_owned())
+}
+
+/// Never cache a page listing team activity, and never leak the URL onward.
+fn harden(mut resp: Response) -> Response {
+    let h = resp.headers_mut();
+    h.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    resp
+}
+
+fn login_page(status: StatusCode, message: &str) -> Response {
+    // A form POST keeps the token out of the URL; the browser sends it in the
+    // body, and it never appears in history or a referrer.
+    let body = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>ai-crew-sync</title>
+<style>body{{font:15px/1.5 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}}
+input{{width:100%;padding:.6rem;font:inherit;font-family:ui-monospace,monospace}}
+button{{margin-top:.75rem;padding:.6rem 1.2rem;font:inherit}}
+p{{color:#666}}</style>
+<h1>ai-crew-sync</h1>
+<p>{}</p>
+<form method="post" action="/dashboard/login">
+  <label>Agent token<br><input name="token" type="password" autocomplete="off"
+         placeholder="acs_…" autofocus></label>
+  <button type="submit">Open dashboard</button>
+</form>
+<p>Read-only. The token is exchanged for a session cookie that expires in an
+hour and cannot call MCP tools.</p>"#,
+        esc(message)
+    );
+    harden((status, Html(body)).into_response())
+}
+
+/// Exchange an agent token for a read-only grant cookie.
+pub async fn login(
+    State(state): State<DashboardState>,
     headers: HeaderMap,
+    axum::extract::Form(form): axum::extract::Form<LoginForm>,
 ) -> Response {
-    // Token from query param or bearer header.
-    let raw = q.token.or_else(|| {
-        headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| {
-                v.strip_prefix("Bearer ")
-                    .or_else(|| v.strip_prefix("bearer "))
-            })
-            .map(|s| s.trim().to_owned())
-    });
+    // Scripts and `curl` do not need this exchange at all — they pass the
+    // bearer header straight to GET /dashboard.
+    let raw = form.token.filter(|t| !t.trim().is_empty());
     let Some(raw) = raw else {
-        return (
+        return login_page(
             StatusCode::UNAUTHORIZED,
-            Html("<h1>401</h1><p>Pass your agent token: <code>/dashboard?token=acs_…</code></p>"),
-        )
-            .into_response();
+            "Paste your agent token to continue.",
+        );
     };
-    let auth = match resolve_token(&pool, &raw).await {
+
+    let auth = match resolve_token(&state.pool, &raw).await {
         Ok(a) => a,
         Err(_) => {
-            return (
+            return login_page(
                 StatusCode::UNAUTHORIZED,
-                Html("<h1>401</h1><p>invalid token</p>"),
-            )
-                .into_response();
+                "That token is not valid, or it has been revoked.",
+            );
         }
     };
 
-    match build_page(&pool, &auth).await {
-        Ok(page) => Html(page).into_response(),
+    let grant = grant::issue(
+        &state.secret,
+        auth.team_id,
+        chrono::Utc::now().timestamp(),
+        GRANT_TTL_SECS,
+    );
+    // Secure is set when the request reached us over TLS, directly or through
+    // a proxy that says so — marking it unconditionally would break plain-HTTP
+    // local use, and omitting it always would be wrong in production.
+    let secure = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    let cookie = format!(
+        "{COOKIE}={grant}; Path=/dashboard; HttpOnly; SameSite=Strict; Max-Age={GRANT_TTL_SECS}{}",
+        if secure { "; Secure" } else { "" }
+    );
+
+    let mut resp = axum::response::Redirect::to("/dashboard").into_response();
+    if let Ok(value) = header::HeaderValue::from_str(&cookie) {
+        resp.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    harden(resp)
+}
+
+pub async fn render(State(state): State<DashboardState>, headers: HeaderMap) -> Response {
+    // A grant cookie, or a bearer header for `curl` and scripts. Never a
+    // query parameter.
+    let team_id = match cookie_value(&headers, COOKIE)
+        .and_then(|g| grant::verify(&state.secret, &g, chrono::Utc::now().timestamp()))
+    {
+        Some(team) => team,
+        None => match bearer(&headers) {
+            Some(raw) => match resolve_token(&state.pool, &raw).await {
+                Ok(a) => a.team_id,
+                Err(_) => {
+                    return login_page(StatusCode::UNAUTHORIZED, "That token is not valid.");
+                }
+            },
+            None => {
+                return login_page(
+                    StatusCode::UNAUTHORIZED,
+                    "Sign in with an agent token to view this team's dashboard.",
+                );
+            }
+        },
+    };
+
+    // The grant proves team membership and nothing more; the page is built
+    // from the team alone, never from an agent identity.
+    let auth = AuthCtx {
+        agent_id: uuid::Uuid::nil(),
+        // A grant proves team membership and nothing more, so there is no
+        // agent to name. Say that, rather than rendering an empty viewer.
+        agent_name: "read-only session".into(),
+        team_id,
+        team_slug: String::new(),
+    };
+
+    match build_page(&state.pool, &auth).await {
+        Ok(page) => harden(Html(page).into_response()),
         Err(e) => {
             tracing::error!(error = %e, "dashboard query failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Html("<h1>500</h1>")).into_response()
+            harden((StatusCode::INTERNAL_SERVER_ERROR, Html("<h1>500</h1>")).into_response())
         }
     }
 }

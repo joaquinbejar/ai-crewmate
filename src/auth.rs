@@ -166,6 +166,9 @@ impl IntoResponse for AuthError {
     }
 }
 
+/// Axum middleware: validates `Authorization: Bearer <token>` and inserts the
+/// resulting [`AuthCtx`] into the request extensions, where rmcp tool handlers
+/// pick it up via `RequestContext -> http::request::Parts -> extensions`.
 /// State for [`require_bearer`]: the pool plus the optional rate limiter.
 #[derive(Clone)]
 pub struct AuthState {
@@ -173,10 +176,6 @@ pub struct AuthState {
     pub limiter: Option<crate::ratelimit::RateLimiter>,
 }
 
-/// Axum middleware: validates the bearer token, charges the per-token rate
-/// limit, and inserts the resulting [`AuthCtx`] into the request extensions,
-/// where rmcp tool handlers pick it up via
-/// `RequestContext -> http::request::Parts -> extensions`.
 pub async fn require_bearer(
     State(state): State<AuthState>,
     mut req: Request,

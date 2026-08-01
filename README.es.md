@@ -70,10 +70,14 @@ El servidor migra la base de datos al arrancar y expone:
 
 - `POST /mcp` — endpoint MCP (requiere `Authorization: Bearer acs_...`)
 - `GET /health` — para el balanceador
-- `GET /dashboard?token=acs_...` — panel read-only para humanos (presencia,
-  tareas, locks, últimos mensajes de canal; los DMs nunca aparecen). Se
-  refresca solo cada 15s. El token va en la URL, así que trátala como secreta
-  (o pásalo como header `Authorization`).
+- `GET /dashboard` — panel read-only para humanos (presencia, tareas, locks,
+  últimos mensajes de canal; los DMs nunca aparecen). Se refresca solo cada
+  15s. Ábrelo en el navegador y pega un token de agente una vez: se
+  intercambia por una cookie de sesión HttpOnly, de vida corta y de solo
+  lectura, que **no puede llamar a herramientas MCP**. Los scripts se saltan
+  el intercambio y mandan `Authorization: Bearer acs_...` directamente. El
+  token nunca se acepta en la query string — una URL acaba en el historial,
+  en los referrers y en los logs del proxy.
 
 ## Dar de alta al equipo
 

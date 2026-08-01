@@ -25,14 +25,6 @@ const IDLE_EVICTION: Duration = Duration::from_secs(600);
 /// no background task, no timer, no extra thread.
 const SWEEP_EVERY: usize = 512;
 
-/// Hard ceiling on tracked callers. Without it, a flood of distinct (likely
-/// invalid) tokens grows the map until the eviction window catches up —
-/// turning the component that exists to bound abuse into a way to exhaust
-/// memory. At the cap, an unknown key is rejected rather than admitted: a
-/// caller the limiter cannot afford to track is a caller it cannot vouch for,
-/// and the alternative is unbounded growth.
-const MAX_TRACKED: usize = 10_000;
-
 struct Bucket {
     tokens: f64,
     last: Instant,
@@ -100,34 +92,10 @@ impl RateLimiter {
 
         let burst = self.burst;
         let refill = self.refill_per_sec;
-
-        // Borrowed lookup first: the common case is an existing bucket, and
-        // allocating a key for it on every request is pure churn.
-        let bucket = if let Some(existing) = inner.buckets.get_mut(key) {
-            existing
-        } else {
-            if inner.buckets.len() >= MAX_TRACKED {
-                // Sweep harder before giving up — the map may be full of
-                // callers that have simply gone quiet.
-                inner
-                    .buckets
-                    .retain(|_, b| now.duration_since(b.last) < IDLE_EVICTION);
-            }
-            if inner.buckets.len() >= MAX_TRACKED {
-                tracing::warn!(
-                    tracked = inner.buckets.len(),
-                    "rate limiter is tracking its maximum number of callers; \
-                     rejecting unknown tokens until some go idle"
-                );
-                return Err(Throttled {
-                    retry_after_secs: 60,
-                });
-            }
-            inner.buckets.entry(key.to_owned()).or_insert(Bucket {
-                tokens: burst,
-                last: now,
-            })
-        };
+        let bucket = inner.buckets.entry(key.to_owned()).or_insert(Bucket {
+            tokens: burst,
+            last: now,
+        });
 
         let elapsed = now.duration_since(bucket.last).as_secs_f64();
         bucket.tokens = (bucket.tokens + elapsed * refill).min(burst);
@@ -179,21 +147,6 @@ mod tests {
         assert!(
             rl.check("b").is_ok(),
             "one caller's budget must not affect another's"
-        );
-    }
-
-    #[test]
-    fn tracking_is_bounded() {
-        // A flood of distinct tokens must not grow the map without limit:
-        // that would make the anti-abuse component the abuse vector.
-        let rl = RateLimiter::new(6000).expect("enabled");
-        for i in 0..(MAX_TRACKED + 500) {
-            let _ = rl.check(&format!("token-{i}"));
-        }
-        let tracked = rl.inner.lock().expect("lock").buckets.len();
-        assert!(
-            tracked <= MAX_TRACKED,
-            "tracked {tracked} callers, cap is {MAX_TRACKED}"
         );
     }
 

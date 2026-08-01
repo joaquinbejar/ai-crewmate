@@ -70,10 +70,13 @@ The server migrates the database on startup and exposes:
 
 - `POST /mcp` — MCP endpoint (requires `Authorization: Bearer acs_...`)
 - `GET /health` — for the load balancer
-- `GET /dashboard?token=acs_...` — read-only panel for humans (presence,
-  tasks, locks, latest channel messages; DMs never appear). Auto-refreshes
-  every 15s. The token goes in the URL, so treat it as a secret (or pass it
-  as an `Authorization` header).
+- `GET /dashboard` — read-only panel for humans (presence, tasks, locks,
+  latest channel messages; DMs never appear). Auto-refreshes every 15s.
+  Open it in a browser and paste an agent token once: it is exchanged for a
+  short-lived, HttpOnly, read-only session cookie that **cannot call MCP
+  tools**. Scripts can skip the exchange and send
+  `Authorization: Bearer acs_...` directly. Tokens are never accepted in the
+  query string — a URL ends up in history, referrers and proxy logs.
 
 ## Onboard the team
 
