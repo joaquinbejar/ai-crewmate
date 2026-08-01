@@ -1,0 +1,347 @@
+//! Console client: everything the MCP tools can do, from a human terminal.
+//!
+//! Connects to the bus over the same Streamable HTTP transport and the same
+//! bearer token a coding agent would use, so a human on the shell is
+//! just another agent on the bus:
+//!
+//! ```text
+//! export BUS_URL=https://bus.internal.example/mcp
+//! export BUS_TOKEN=acs_...
+//! ai-crew-sync client whoami
+//! ai-crew-sync client send --channel deploys --body "staging is on 1.4.2"
+//! ai-crew-sync client read --scope inbox
+//! ai-crew-sync client task claim --key refactor-auth
+//! ```
+
+use anyhow::{Context, bail};
+use clap::{Args, Subcommand};
+use rmcp::{
+    ServiceExt,
+    model::{CallToolRequestParams, ClientInfo},
+    transport::{
+        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
+    },
+};
+use serde_json::{Value, json};
+
+#[derive(Args)]
+pub struct ClientArgs {
+    /// URL of the bus MCP endpoint, e.g. https://bus.example.com/mcp
+    #[arg(long, env = "BUS_URL", default_value = "http://localhost:8787/mcp")]
+    pub url: String,
+
+    /// Your agent token (issued with `ai-crew-sync token issue`).
+    #[arg(long, env = "BUS_TOKEN", hide_env_values = true)]
+    pub token: String,
+
+    /// Print raw JSON instead of the human-readable rendering.
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: ClientCmd,
+}
+
+#[derive(Subcommand)]
+pub enum ClientCmd {
+    /// Who am I on the bus, and is anything waiting for me?
+    Whoami,
+    /// List the tools the server exposes (sanity check).
+    Tools,
+    /// Send a message: --channel to broadcast, --to for a direct message.
+    Send {
+        #[arg(long, conflicts_with = "to")]
+        channel: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        body: String,
+        #[arg(long)]
+        reply_to: Option<i64>,
+        /// Attach a file (repeatable). Max 8 files, 256 KiB each.
+        #[arg(long)]
+        file: Vec<std::path::PathBuf>,
+    },
+    /// Attach a file to a task.
+    Attach {
+        /// Task key.
+        task: String,
+        #[arg(long)]
+        file: std::path::PathBuf,
+        #[arg(long)]
+        content_type: Option<String>,
+    },
+    /// Download an attachment by id.
+    Download {
+        id: i64,
+        /// Output path; defaults to the attachment's filename.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Ask a teammate's agent and wait for the answer.
+    Ask {
+        to: String,
+        /// The question. Omit when resuming with --resume-id.
+        question: Option<String>,
+        #[arg(long)]
+        timeout_seconds: Option<i64>,
+        /// Keep waiting on an earlier question (its question_message_id).
+        #[arg(long)]
+        resume_id: Option<i64>,
+    },
+    /// Read messages ("all", "inbox", or a channel name).
+    Read {
+        #[arg(long, default_value = "all")]
+        scope: String,
+        /// Re-read history instead of only unread messages.
+        #[arg(long)]
+        history: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Full-text search messages.
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// List channels.
+    Channels,
+    /// Create a channel.
+    ChannelCreate {
+        name: String,
+        #[arg(long)]
+        topic: Option<String>,
+    },
+    /// Who is on the bus and what are they doing?
+    Agents {
+        #[arg(long)]
+        online: bool,
+    },
+    /// Publish your own presence.
+    Beat {
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        activity: Option<String>,
+        #[arg(long)]
+        ttl_seconds: Option<i64>,
+    },
+    /// List tasks.
+    Tasks {
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Operate on a single task.
+    #[command(subcommand)]
+    Task(TaskCmd),
+    /// List notes.
+    Notes {
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    /// Operate on a single note.
+    #[command(subcommand)]
+    Note(NoteCmd),
+    /// Block until something happens on the bus (or the timeout passes).
+    Wait {
+        #[arg(long)]
+        timeout_seconds: Option<i64>,
+        /// Restrict to kinds: message, task, lock, note.
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+    },
+    /// Advisory locks on shared resources.
+    #[command(subcommand)]
+    Lock(LockCmd),
+    /// Summary of the team's recent activity.
+    Digest {
+        #[arg(long, default_value_t = 24)]
+        hours: i64,
+    },
+    /// Escape hatch: call any tool with raw JSON arguments.
+    Call {
+        tool: String,
+        /// JSON object with the arguments, e.g. '{"key": "x"}'.
+        #[arg(long, default_value = "{}")]
+        args: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LockCmd {
+    Acquire {
+        name: String,
+        #[arg(long)]
+        ttl_seconds: Option<i64>,
+        #[arg(long)]
+        purpose: Option<String>,
+    },
+    Release {
+        name: String,
+    },
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum TaskCmd {
+    Create {
+        key: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        description: Option<String>,
+        /// Comma-separated keys of tasks this one depends on.
+        #[arg(long, value_delimiter = ',')]
+        depends_on: Vec<String>,
+    },
+    Show {
+        key: String,
+    },
+    Claim {
+        key: String,
+        #[arg(long)]
+        lease_seconds: Option<i64>,
+    },
+    /// Claim the oldest available task, whatever it is.
+    Next {
+        #[arg(long)]
+        lease_seconds: Option<i64>,
+    },
+    Renew {
+        key: String,
+        #[arg(long)]
+        lease_seconds: Option<i64>,
+    },
+    Release {
+        key: String,
+    },
+    Done {
+        key: String,
+        #[arg(long)]
+        result: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum NoteCmd {
+    Get {
+        key: String,
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    Set {
+        key: String,
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+    },
+    Rm {
+        key: String,
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    Search {
+        query: String,
+        #[arg(long)]
+        scope: Option<String>,
+    },
+}
+
+/// Strip nulls so optional flags the user did not pass are simply absent.
+pub mod mapping;
+pub mod render;
+
+use mapping::to_call;
+use render::render;
+
+pub async fn run(args: ClientArgs) -> anyhow::Result<()> {
+    let mut config = StreamableHttpClientTransportConfig::with_uri(args.url.clone());
+    config.auth_header = Some(args.token.clone());
+    config.allow_stateless = true;
+    let transport = StreamableHttpClientTransport::from_config(config);
+
+    let client = ClientInfo::default()
+        .serve(transport)
+        .await
+        .context("could not connect to the bus (check --url and --token)")?;
+
+    let outcome = run_command(&client, &args).await;
+    let _ = client.cancel().await;
+    outcome
+}
+
+async fn run_command(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>,
+    args: &ClientArgs,
+) -> anyhow::Result<()> {
+    // `tools` is the one command that is not a tool call.
+    if matches!(args.command, ClientCmd::Tools) {
+        let tools = client.list_all_tools().await?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&tools)?);
+        } else {
+            for tool in tools {
+                println!(
+                    "{:<20} {}",
+                    tool.name,
+                    tool.description.as_deref().unwrap_or_default().trim()
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let (tool, call_args) = match &args.command {
+        ClientCmd::Call { tool, args: raw } => {
+            let parsed: Value = serde_json::from_str(raw)
+                .with_context(|| format!("--args is not valid JSON: {raw}"))?;
+            if !parsed.is_object() {
+                bail!("--args must be a JSON object");
+            }
+            (tool.clone(), parsed)
+        }
+        other => {
+            // `tools` is handled above and is the only command that maps to
+            // nothing; anything else reaching here without a mapping is a
+            // missing match arm, and says so instead of panicking.
+            let Some((tool, call_args)) = to_call(other)? else {
+                bail!("this subcommand has no MCP tool mapping yet");
+            };
+            (tool.to_string(), call_args)
+        }
+    };
+
+    let arguments: serde_json::Map<String, Value> =
+        serde_json::from_value(call_args).context("arguments did not form a JSON object")?;
+    let result = client
+        .call_tool(CallToolRequestParams::new(tool.clone()).with_arguments(arguments))
+        .await
+        .map_err(|e| anyhow::anyhow!("{tool} failed: {e}"))?;
+
+    if result.is_error == Some(true) {
+        bail!("{tool} returned an error: {:?}", result.content);
+    }
+    let value = result
+        .structured_content
+        .clone()
+        .unwrap_or_else(|| json!({ "ok": true }));
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        render(&args.command, &value)?;
+    }
+    Ok(())
+}

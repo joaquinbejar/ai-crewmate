@@ -245,8 +245,18 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("could not connect to Postgres")?;
 
-    match cli.command {
-        Command::McpConfig { .. } | Command::Client(_) => unreachable!("handled above"),
+    dispatch(cli.command, pool).await
+}
+
+/// Every command that needs a database, once the pool exists.
+///
+/// Kept out of `main` so process setup — logging, `.env`, argument parsing,
+/// the two commands that need no database — reads as its own short function
+/// rather than as a preamble to a 100-line match.
+async fn dispatch(command: Command, pool: sqlx::PgPool) -> anyhow::Result<()> {
+    match command {
+        // `main` routes these before opening a pool; they cannot arrive here.
+        Command::McpConfig { .. } | Command::Client(_) => unreachable!("handled in main"),
 
         Command::Migrate => {
             MIGRATOR.run(&pool).await?;

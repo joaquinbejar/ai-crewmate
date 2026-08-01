@@ -1,0 +1,310 @@
+//! Human-readable output. `--json` bypasses all of this and prints the raw
+//! structured content, so scripts never depend on the shape of these lines.
+
+use anyhow::Context;
+use serde_json::Value;
+
+use super::{ClientCmd, LockCmd, NoteCmd, TaskCmd};
+
+pub(super) fn field<'v>(v: &'v Value, key: &str) -> &'v str {
+    v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn render_messages(value: &Value) {
+    let messages = value["messages"].as_array().cloned().unwrap_or_default();
+    if messages.is_empty() {
+        println!("(no messages)");
+        return;
+    }
+    for m in &messages {
+        let target = m["channel"]
+            .as_str()
+            .map(|c| format!("#{c}"))
+            .or_else(|| m["to"].as_str().map(|t| format!("@{t}")))
+            .unwrap_or_default();
+        println!(
+            "[{}] {} {} → {}: {}",
+            m["id"],
+            field(m, "created_at"),
+            field(m, "from"),
+            target,
+            field(m, "body"),
+        );
+    }
+    if value["truncated"].as_bool() == Some(true) {
+        println!("(truncated at limit; raise --limit to see more)");
+    }
+}
+
+fn render_task_line(t: &Value) {
+    let holder = t["claimed_by"]
+        .as_str()
+        .map(|h| format!(" ({h})"))
+        .unwrap_or_default();
+    let expired = if t["lease_expired"].as_bool() == Some(true) {
+        " [lease expired]"
+    } else {
+        ""
+    };
+    println!(
+        "{:<24} {:<8}{}{} {}",
+        field(t, "key"),
+        field(t, "status"),
+        holder,
+        expired,
+        field(t, "title"),
+    );
+}
+
+pub(super) fn render(cmd: &ClientCmd, value: &Value) -> anyhow::Result<()> {
+    match cmd {
+        ClientCmd::Whoami => {
+            println!(
+                "{} @ {} — {} unread DM(s), {} claimed task(s)",
+                field(value, "agent"),
+                field(value, "team"),
+                value["unread_direct_messages"],
+                value["open_claimed_tasks"],
+            );
+        }
+        ClientCmd::Read { .. } | ClientCmd::Search { .. } => render_messages(value),
+        ClientCmd::Send { .. } => {
+            let m = &value["message"];
+            println!("sent [{}] to {}", m["id"], value["delivered_to"]);
+        }
+        ClientCmd::Ask { .. } => {
+            if value["answered"].as_bool() == Some(true) {
+                let a = &value["answer"];
+                println!("{}: {}", field(a, "from"), field(a, "body"));
+            } else {
+                println!("(no answer yet)");
+                println!("{}", field(value, "suggestion"));
+            }
+        }
+        ClientCmd::Attach { .. } => {
+            println!(
+                "attached [{}] {} ({} bytes)",
+                value["id"],
+                field(value, "filename"),
+                value["size_bytes"]
+            );
+        }
+        ClientCmd::Download { out, .. } => {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(field(value, "data_base64"))
+                .context("server returned invalid base64")?;
+            let path = out
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(field(value, "filename")));
+            std::fs::write(&path, data)
+                .with_context(|| format!("cannot write {}", path.display()))?;
+            println!(
+                "wrote {} ({} bytes, {})",
+                path.display(),
+                value["size_bytes"],
+                field(value, "content_type")
+            );
+        }
+        ClientCmd::ChannelCreate { .. } => {
+            println!("channel #{} ready", field(value, "name"));
+        }
+        ClientCmd::Channels => {
+            let channels = value["channels"].as_array().cloned().unwrap_or_default();
+            if channels.is_empty() {
+                println!("(no channels yet)");
+            }
+            for c in &channels {
+                println!(
+                    "#{:<20} {:>5} msg(s)  {}",
+                    field(c, "name"),
+                    c["message_count"],
+                    field(c, "topic"),
+                );
+            }
+        }
+        ClientCmd::Agents { .. } => {
+            for a in value["agents"].as_array().cloned().unwrap_or_default() {
+                let place = match (a["repo"].as_str(), a["branch"].as_str()) {
+                    (Some(r), Some(b)) => format!(" {r}@{b}"),
+                    (Some(r), None) => format!(" {r}"),
+                    _ => String::new(),
+                };
+                println!(
+                    "{:<20} {:<8}{} {}",
+                    field(&a, "name"),
+                    field(&a, "status"),
+                    place,
+                    field(&a, "activity"),
+                );
+            }
+            println!("({} online)", value["online_count"]);
+        }
+        ClientCmd::Tasks { .. } => {
+            let tasks = value["tasks"].as_array().cloned().unwrap_or_default();
+            if tasks.is_empty() {
+                println!("(no tasks)");
+            }
+            for t in &tasks {
+                render_task_line(t);
+            }
+            println!("({} open, {} claimed)", value["open"], value["claimed"]);
+        }
+        ClientCmd::Task(TaskCmd::Show { .. }) => {
+            render_task_line(&value["task"]);
+            if let Some(desc) = value["task"]["description"].as_str() {
+                println!("  {desc}");
+            }
+            if let Some(result) = value["task"]["result"].as_str() {
+                println!("  result: {result}");
+            }
+            for e in value["history"].as_array().cloned().unwrap_or_default() {
+                println!(
+                    "  {} {} {} {}",
+                    field(&e, "created_at"),
+                    field(&e, "event"),
+                    field(&e, "agent"),
+                    field(&e, "detail"),
+                );
+            }
+        }
+        ClientCmd::Task(TaskCmd::Claim { .. } | TaskCmd::Next { .. }) => {
+            if value["claimed"].as_bool() == Some(true) {
+                print!("claimed: ");
+                render_task_line(&value["task"]);
+            } else {
+                println!(
+                    "not claimed: {}",
+                    value["reason"].as_str().unwrap_or("unknown reason")
+                );
+            }
+        }
+        ClientCmd::Task(_) => {
+            render_task_line(value);
+        }
+        ClientCmd::Notes { .. } | ClientCmd::Note(NoteCmd::Search { .. }) => {
+            let notes = value["notes"].as_array().cloned().unwrap_or_default();
+            if notes.is_empty() {
+                println!("(no notes)");
+            }
+            for n in &notes {
+                let first_line = field(n, "value").lines().next().unwrap_or("").to_owned();
+                println!("{}/{}: {}", field(n, "scope"), field(n, "key"), first_line);
+            }
+        }
+        ClientCmd::Note(NoteCmd::Get { .. }) => {
+            if value["found"].as_bool() == Some(true) {
+                let n = &value["note"];
+                println!(
+                    "{}/{} (by {}, {})",
+                    field(n, "scope"),
+                    field(n, "key"),
+                    field(n, "updated_by"),
+                    field(n, "updated_at"),
+                );
+                println!("{}", field(n, "value"));
+            } else {
+                println!("not found");
+            }
+        }
+        ClientCmd::Note(NoteCmd::Set { .. }) => {
+            println!("saved {}/{}", field(value, "scope"), field(value, "key"));
+        }
+        ClientCmd::Note(NoteCmd::Rm { .. }) => {
+            println!("{}", field(value, "detail"));
+        }
+        ClientCmd::Beat { .. } => {
+            println!(
+                "presence updated: {} {}",
+                field(value, "status"),
+                field(value, "activity"),
+            );
+        }
+        ClientCmd::Wait { .. } => {
+            if value["woke"].as_bool() == Some(true) {
+                for e in value["events"].as_array().cloned().unwrap_or_default() {
+                    println!("[{}] {}", field(&e, "kind"), field(&e, "summary"));
+                }
+            } else {
+                println!("(nothing happened)");
+            }
+            println!("{}", field(value, "suggestion"));
+        }
+        ClientCmd::Lock(LockCmd::List) => {
+            let locks = value["locks"].as_array().cloned().unwrap_or_default();
+            if locks.is_empty() {
+                println!("(no locks held)");
+            }
+            for l in &locks {
+                println!(
+                    "{:<28} {} until {}  {}",
+                    field(l, "name"),
+                    field(l, "holder"),
+                    field(l, "expires_at"),
+                    field(l, "purpose"),
+                );
+            }
+        }
+        ClientCmd::Lock(LockCmd::Acquire { .. }) => {
+            if value["acquired"].as_bool() == Some(true) {
+                let l = &value["lock"];
+                println!(
+                    "acquired {} until {}",
+                    field(l, "name"),
+                    field(l, "expires_at")
+                );
+            } else {
+                println!("not acquired: {}", field(value, "reason"));
+            }
+        }
+        ClientCmd::Lock(LockCmd::Release { .. }) => {
+            println!("{}", field(value, "detail"));
+        }
+        ClientCmd::Digest { .. } => {
+            println!("— last {}h —", value["hours"]);
+            for c in value["channels"].as_array().cloned().unwrap_or_default() {
+                println!("#{}: {} msg(s)", field(&c, "name"), c["message_count"]);
+                for m in c["last_messages"].as_array().cloned().unwrap_or_default() {
+                    println!("   {}: {}", field(&m, "from"), field(&m, "body"));
+                }
+            }
+            let moved = value["tasks_moved"].as_array().cloned().unwrap_or_default();
+            if !moved.is_empty() {
+                println!("tasks:");
+                for t in &moved {
+                    println!(
+                        "   {} → {} {}",
+                        field(t, "key"),
+                        field(t, "status"),
+                        t["claimed_by"]
+                            .as_str()
+                            .map(|s| format!("({s})"))
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+            for n in value["notes_updated"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+            {
+                println!(
+                    "note {}/{} by {}",
+                    field(&n, "scope"),
+                    field(&n, "key"),
+                    field(&n, "updated_by")
+                );
+            }
+            println!(
+                "({} open, {} claimed, {} lock(s))",
+                value["open_tasks"],
+                value["claimed_tasks"],
+                value["active_locks"].as_array().map(Vec::len).unwrap_or(0),
+            );
+        }
+        _ => {
+            println!("{}", serde_json::to_string_pretty(value).unwrap());
+        }
+    }
+    Ok(())
+}
