@@ -235,6 +235,71 @@ jobs:
                               -o -name '*.deb' -o -name '*.rpm' \) -print0 \
             | xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY"
 
+  # Bumps the formula in joaquinbejar/homebrew-tap to this release. Needs a
+  # HOMEBREW_TAP_TOKEN secret with contents:write on that repo; without it the
+  # job says so and skips rather than failing the release.
+  homebrew:
+    name: update the homebrew tap
+    needs: publish-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check for the tap token
+        id: token
+        run: |
+          if [ -n "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set — skipping the tap update. Add it to bump the formula automatically."
+          fi
+
+      - name: Update the formula
+        if: steps.token.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          version="${TAG#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
+          # Checksums come from the release itself, so the formula can only
+          # ever point at bytes that were actually published.
+          declare -A sums
+          for t in aarch64-apple-darwin x86_64-apple-darwin \
+                   aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+            sums[$t]=$(curl -fsSL "$base/ai-crew-sync-${TAG}-${t}.tar.gz.sha256" | awk '{print $1}')
+            [ -n "${sums[$t]}" ] || { echo "no checksum published for $t"; exit 1; }
+          done
+
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
+          cd tap
+          f=Formula/ai-crew-sync.rb
+          sed -i -E "s|version \"[^\"]+\"|version \"$version\"|" "$f"
+          sed -i -E "s|releases/download/v[^/]+/ai-crew-sync-v[^-]+-|releases/download/${TAG}/ai-crew-sync-${TAG}-|g" "$f"
+          python3 - "$f" <<PY
+          import re, sys
+          path = sys.argv[1]
+          s = open(path).read()
+          for target, digest in {
+              "aarch64-apple-darwin": "${sums[aarch64-apple-darwin]}",
+              "x86_64-apple-darwin": "${sums[x86_64-apple-darwin]}",
+              "aarch64-unknown-linux-musl": "${sums[aarch64-unknown-linux-musl]}",
+              "x86_64-unknown-linux-musl": "${sums[x86_64-unknown-linux-musl]}",
+          }.items():
+              # Replace the sha256 that follows this target's url.
+              s = re.sub(
+                  r'(' + re.escape(target) + r'\.tar\.gz"\s*\n\s*sha256 ")[0-9a-f]{64}',
+                  r'\g<1>' + digest, s)
+          open(path, "w").write(s)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "ai-crew-sync $version" && git push
+
   docker:
     name: publish multi-arch image
     needs: [gates, smoke]

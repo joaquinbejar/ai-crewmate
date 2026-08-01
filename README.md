@@ -43,10 +43,34 @@ Design decisions:
 ## Install
 
 ```bash
+# macOS / Linux, via Homebrew
+brew install joaquinbejar/tap/ai-crew-sync
+
+# Debian / Ubuntu
+curl -LO https://github.com/joaquinbejar/ai-crew-sync/releases/latest/download/ai-crew-sync_0.5.1_amd64.deb
+sudo dpkg -i ai-crew-sync_0.5.1_amd64.deb
+
+# RHEL / Rocky / Fedora
+sudo rpm -i https://github.com/joaquinbejar/ai-crew-sync/releases/latest/download/ai-crew-sync-0.5.1.x86_64.rpm
+
+# From source, or as a container
 cargo install ai-crew-sync
-# or
 docker pull ghcr.io/joaquinbejar/ai-crew-sync:latest
 ```
+
+One binary is the server, the operator CLI and the console client. The `.deb`
+and `.rpm` additionally install a hardened systemd unit and a root-readable
+environment file at `/etc/ai-crew-sync/ai-crew-sync.env` — the service is
+installed **disabled**, because it cannot work until `DATABASE_URL` points at
+a reachable Postgres:
+
+```bash
+sudo vi /etc/ai-crew-sync/ai-crew-sync.env   # DATABASE_URL, BUS_DASHBOARD_SECRET
+sudo systemctl enable --now ai-crew-sync
+```
+
+Linux binaries are statically linked against musl, so they run on any
+distribution regardless of its glibc.
 
 ## Quick start (docker-compose)
 
