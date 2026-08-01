@@ -7,6 +7,13 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
+/// `serde_json::Value` fields would produce a boolean `true` schema, which
+/// some MCP clients' validators reject; an empty object schema means the same
+/// ("anything") and passes everywhere.
+pub fn any_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({})
+}
+
 pub fn ts(dt: chrono::DateTime<chrono::Utc>) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -76,6 +83,7 @@ pub struct MessageInfo {
     pub to: Option<String>,
     pub body: String,
     pub reply_to: Option<i64>,
+    #[schemars(schema_with = "any_json_schema")]
     pub metadata: serde_json::Value,
     /// Files attached to this message; fetch content with get_attachment.
     pub attachments: Vec<AttachmentMeta>,
@@ -144,6 +152,7 @@ pub struct TaskInfo {
     /// True when the claim has already lapsed.
     pub lease_expired: bool,
     pub result: Option<String>,
+    #[schemars(schema_with = "any_json_schema")]
     pub metadata: serde_json::Value,
     /// Files attached to this task; fetch content with get_attachment.
     pub attachments: Vec<AttachmentMeta>,

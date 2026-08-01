@@ -6,7 +6,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: bus
     volumes:
-      - bus-data:/var/lib/postgresql/data
+      # postgres:18+ expects the mount at /var/lib/postgresql (data lives in a
+      # versioned subdir), which keeps future pg_upgrade --link possible.
+      - bus-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bus -d bus"]
       interval: 5s

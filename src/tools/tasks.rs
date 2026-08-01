@@ -28,6 +28,7 @@ pub struct CreateTaskArgs {
     pub description: Option<String>,
     /// Optional structured payload (any JSON object).
     #[serde(default)]
+    #[schemars(schema_with = "crate::model::any_json_schema")]
     pub metadata: Option<serde_json::Value>,
     /// Keys of existing tasks this one depends on. It cannot be claimed until
     /// every dependency is done or cancelled, and claim_next_task skips it.

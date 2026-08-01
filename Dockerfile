@@ -17,7 +17,9 @@ COPY migrations ./migrations
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # ---- runtime stage ---------------------------------------------------------
-FROM debian:bookworm-slim
+# Must track the Debian release under rust:*-slim above, or the binary links
+# against a newer glibc than the runtime ships.
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
     useradd --system --home /app bus

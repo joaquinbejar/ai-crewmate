@@ -51,6 +51,7 @@ pub struct PostMessageArgs {
     pub reply_to: Option<i64>,
     /// Optional structured payload attached to the message (any JSON object).
     #[serde(default)]
+    #[schemars(schema_with = "crate::model::any_json_schema")]
     pub metadata: Option<serde_json::Value>,
     /// Small files to ship with the message (diffs, logs, configs). Max 8
     /// files, 256 KiB each (decoded).
