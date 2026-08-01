@@ -229,7 +229,8 @@ después `cargo run -- serve` (migra al arrancar) y
 ### Política de toolchain
 
 El MSRV del crate es el `rust-version` de `Cargo.toml` (**1.88**). CI lo
-comprueba en cada push: un job con la stable actual (formato, Clippy, tests)
+comprueba en cada pull request y en cada push a `main`: un job con la stable
+actual (formato, Clippy, tests)
 y otro que compila y testea con el MSRV fijado, así una dependencia que
 exija un compilador más nuevo falla antes de publicar y no en tu
 `cargo install`.
