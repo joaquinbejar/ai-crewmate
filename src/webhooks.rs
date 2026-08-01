@@ -33,6 +33,9 @@ const BATCH: i64 = 32;
 const CONCURRENCY: usize = 8;
 /// Backstop poll when no notification arrives — also what makes retries due.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How often retention runs, measured in elapsed time rather than in idle
+/// rounds — a busy dispatcher has more to prune, not less.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(600);
 /// Successful deliveries are evidence for a while, then noise.
 const KEEP_SENT: Duration = Duration::from_secs(24 * 3600);
 /// Failures stay long enough for someone to notice and investigate.
@@ -90,13 +93,19 @@ fn body_for(kind: &str, summary: &str, payload: &serde_json::Value) -> serde_jso
 }
 
 async fn mark_sent(pool: &PgPool, id: i64) {
-    let _ = sqlx::query(
+    // Losing this UPDATE means a delivered webhook is sent again later. That
+    // is survivable — the guarantee is at-least-once — but an operator
+    // debugging duplicates needs to see it.
+    if let Err(e) = sqlx::query(
         "UPDATE webhook_deliveries SET status = 'sent', last_error = NULL, updated_at = now()
          WHERE id = $1",
     )
     .bind(id)
     .execute(pool)
-    .await;
+    .await
+    {
+        tracing::warn!(delivery = id, error = %e, "could not record a successful delivery");
+    }
 }
 
 /// Record a failed attempt: schedule a retry with exponential backoff, or park
@@ -114,7 +123,7 @@ async fn mark_failed(pool: &PgPool, id: i64, attempts: i32, error: &str) {
             "webhook delivery permanently failed"
         );
     }
-    let _ = sqlx::query(
+    let recorded = sqlx::query(
         r#"
         UPDATE webhook_deliveries
         SET status = CASE WHEN $2 THEN 'failed' ELSE 'pending' END,
@@ -130,6 +139,12 @@ async fn mark_failed(pool: &PgPool, id: i64, attempts: i32, error: &str) {
     .bind(error)
     .execute(pool)
     .await;
+    if let Err(e) = recorded {
+        // The row keeps the 60s hold from claim() and becomes due again, so
+        // nothing is lost — but without this line the retry schedule looks
+        // inexplicable.
+        tracing::warn!(delivery = id, error = %e, "could not record a failed delivery");
+    }
 }
 
 /// Send one batch, bounded to `CONCURRENCY` in-flight requests.
@@ -145,7 +160,13 @@ async fn send_batch(pool: &PgPool, http: &reqwest::Client, batch: Vec<Delivery>)
             running.spawn(async move {
                 let body = body_for(&d.kind, &d.summary, &d.payload);
                 match http.post(&d.url).json(&body).send().await {
-                    Ok(resp) if resp.status().is_success() => mark_sent(&pool, d.id).await,
+                    Ok(resp) if resp.status().is_success() => {
+                        // Drain before dropping: hyper only reuses a
+                        // connection whose body was consumed, and a webhook
+                        // dispatcher talks to the same few hosts all day.
+                        let _ = resp.bytes().await;
+                        mark_sent(&pool, d.id).await;
+                    }
                     Ok(resp) => {
                         let status = resp.status();
                         // 4xx other than 408/429 will not improve on retry;
@@ -154,14 +175,19 @@ async fn send_batch(pool: &PgPool, http: &reqwest::Client, batch: Vec<Delivery>)
                             && status != reqwest::StatusCode::REQUEST_TIMEOUT
                             && status != reqwest::StatusCode::TOO_MANY_REQUESTS;
                         let attempts = if permanent { MAX_ATTEMPTS } else { d.attempts };
+                        let _ = resp.bytes().await;
                         mark_failed(&pool, d.id, attempts, &format!("HTTP {status}")).await;
                     }
                     Err(e) => mark_failed(&pool, d.id, d.attempts, &e.to_string()).await,
                 }
             });
         }
-        if running.join_next().await.is_none() {
-            break;
+        match running.join_next().await {
+            None => break,
+            Some(Ok(())) => {}
+            // A delivery task should never panic; if one does, the row stays
+            // pending and retries forever with no clue why. Say so.
+            Some(Err(e)) => tracing::error!(error = %e, "webhook delivery task failed"),
         }
     }
 }
@@ -198,9 +224,18 @@ pub async fn run_dispatcher(pool: PgPool, hub: EventHub, ct: CancellationToken) 
         }
     };
     let mut rx = hub.subscribe();
-    let mut since_prune = 0u32;
+
+    let mut last_prune = tokio::time::Instant::now();
 
     loop {
+        // Retention runs on elapsed time, not on idle rounds. Counting rounds
+        // meant a dispatcher that always found work never pruned at all —
+        // exactly the deployment where the table grows fastest.
+        if last_prune.elapsed() >= PRUNE_INTERVAL {
+            last_prune = tokio::time::Instant::now();
+            prune(&pool).await;
+        }
+
         match claim(&pool).await {
             Ok(batch) if !batch.is_empty() => {
                 send_batch(&pool, &http, batch).await;
@@ -208,12 +243,6 @@ pub async fn run_dispatcher(pool: PgPool, hub: EventHub, ct: CancellationToken) 
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "claiming webhook deliveries failed"),
-        }
-
-        since_prune += 1;
-        if since_prune >= 120 {
-            since_prune = 0;
-            prune(&pool).await;
         }
 
         // Idle: wait for an event or the poll interval, whichever comes first.
