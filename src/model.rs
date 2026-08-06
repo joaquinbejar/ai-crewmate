@@ -29,6 +29,11 @@ pub struct WhoAmI {
     pub agent_id: String,
     pub team: String,
     pub team_id: String,
+    /// Which of your concurrent working contexts this connection is, taken
+    /// from the `X-Crew-Session` header — usually the repository you are in.
+    /// `null` means the shared session: you sent no header, and your presence,
+    /// task claims and locks are not separated from your other sessions.
+    pub session: Option<String>,
     /// Number of unread direct messages waiting for you.
     pub unread_direct_messages: i64,
     /// Tasks currently claimed by you and not yet completed.

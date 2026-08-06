@@ -209,6 +209,22 @@ async fn connect(base: &str, token: &str) -> Client {
         .expect("mcp handshake")
 }
 
+/// Connect as a named working context — the same token, a different session.
+async fn connect_with_session(base: &str, token: &str, session: &str) -> Client {
+    let mut config = StreamableHttpClientTransportConfig::with_uri(format!("{base}/mcp"));
+    config.auth_header = Some(token.to_string());
+    config.allow_stateless = true;
+    config.custom_headers.insert(
+        ai_crew_sync::auth::SESSION_HEADER.parse().unwrap(),
+        session.parse().unwrap(),
+    );
+    let transport = StreamableHttpClientTransport::from_config(config);
+    ClientInfo::default()
+        .serve(transport)
+        .await
+        .expect("mcp handshake")
+}
+
 /// Call a tool and return its structured output.
 async fn call(client: &Client, name: &str, args: Value) -> Value {
     let args: serde_json::Map<String, Value> = serde_json::from_value(args).unwrap();
@@ -2520,4 +2536,109 @@ async fn dashboard_requires_a_token_and_renders_team_state() {
     assert_eq!(resp.status(), 200, "curl/script access keeps working");
 
     let _ = joaquin.cancel().await;
+}
+
+// ------------------------------------------------------------------ sessions --
+
+#[tokio::test]
+async fn one_token_carries_several_sessions_without_splitting_identity() {
+    let h = require_db!("t_session_ctx");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let core = connect_with_session(&h.base, &token, "core-manager").await;
+    let shared = connect(&h.base, &token).await;
+
+    let m = call(&market, "whoami", json!({})).await;
+    let c = call(&core, "whoami", json!({})).await;
+    let s = call(&shared, "whoami", json!({})).await;
+
+    // One person: the session never changes who is speaking.
+    assert_eq!(m["agent"], "joaquin");
+    assert_eq!(m["agent_id"], c["agent_id"]);
+    assert_eq!(m["agent_id"], s["agent_id"]);
+    assert_eq!(m["team"], "layerv");
+
+    // Three working contexts.
+    assert_eq!(m["session"], "market-data");
+    assert_eq!(c["session"], "core-manager");
+    assert_eq!(
+        s["session"],
+        Value::Null,
+        "no header must report the shared session as null, not as an empty name"
+    );
+
+    // Case and padding must not silently create a second session.
+    let same = connect_with_session(&h.base, &token, "  Market-Data ").await;
+    assert_eq!(
+        call(&same, "whoami", json!({})).await["session"],
+        "market-data"
+    );
+
+    // Presence is per session now, so list_agents must still report one entry
+    // per *person* rather than one per session. Grouping the sessions under
+    // their agent is the next change in the stack; until it lands, duplicate
+    // rows would read as duplicate teammates.
+    call(&market, "heartbeat", json!({"repo": "Layer-V/market-data"})).await;
+    call(&core, "heartbeat", json!({"repo": "Layer-V/core-manager"})).await;
+    let seen = call(&market, "list_agents", json!({})).await;
+    let mine = seen["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["name"] == "joaquin")
+        .count();
+    assert_eq!(mine, 1, "one entry per teammate: {seen}");
+    assert_eq!(seen["online_count"], 1, "two sessions is still one person");
+
+    for client in [market, core, shared, same] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_malformed_session_header_is_rejected_before_the_token_is_used() {
+    let h = require_db!("t_session_bad");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let http = reqwest::Client::new();
+
+    let call_with = |session: String| {
+        let http = http.clone();
+        let base = h.base.clone();
+        let token = token.clone();
+        async move {
+            http.post(format!("{base}/mcp"))
+                .header("Authorization", format!("Bearer {token}"))
+                .header(ai_crew_sync::auth::SESSION_HEADER, session)
+                .header("Accept", "application/json, text/event-stream")
+                .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let resp = call_with("x".repeat(ai_crew_sync::auth::MAX_SESSION_BYTES + 1)).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "an over-long session label is a bad request"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains(&ai_crew_sync::auth::MAX_SESSION_BYTES.to_string()),
+        "the error must state the limit so the caller can fix it: {body}"
+    );
+
+    // '/' separates agent from session when addressing a message.
+    let resp = call_with("joaquin/market-data".to_owned()).await;
+    assert_eq!(resp.status(), 400);
+
+    // A valid label on the same token still works, so nothing above rejected
+    // the token itself.
+    let resp = call_with("market-data".to_owned()).await;
+    assert_eq!(resp.status(), 200);
+
+    h.shutdown().await;
 }

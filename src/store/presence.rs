@@ -65,34 +65,67 @@ pub async fn heartbeat(
         None => None,
     };
 
-    sqlx::query(
+    // Upsert on (agent_id, session), and report back the row just written.
+    // Reading it from list_agents instead would pick whichever session came
+    // first alphabetically once an agent has more than one.
+    let row: (
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        bool,
+    ) = sqlx::query_as(
         r#"
-        INSERT INTO agent_presence (agent_id, status, repo, branch, activity, updated_at, expires_at)
-        VALUES ($1, $2, $3, $4, $5, now(), now() + make_interval(secs => $6))
-        ON CONFLICT (agent_id) DO UPDATE SET
-            status     = EXCLUDED.status,
-            -- keep the previous value when the caller omits a field
-            repo       = COALESCE(EXCLUDED.repo, agent_presence.repo),
-            branch     = COALESCE(EXCLUDED.branch, agent_presence.branch),
-            activity   = COALESCE(EXCLUDED.activity, agent_presence.activity),
-            updated_at = now(),
-            expires_at = EXCLUDED.expires_at
+        WITH up AS (
+            INSERT INTO agent_presence
+                (agent_id, session, status, repo, branch, activity, updated_at, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, now(), now() + make_interval(secs => $7))
+            ON CONFLICT (agent_id, session) DO UPDATE SET
+                status     = EXCLUDED.status,
+                -- keep the previous value when the caller omits a field
+                repo       = COALESCE(EXCLUDED.repo, agent_presence.repo),
+                branch     = COALESCE(EXCLUDED.branch, agent_presence.branch),
+                activity   = COALESCE(EXCLUDED.activity, agent_presence.activity),
+                updated_at = now(),
+                expires_at = EXCLUDED.expires_at
+            RETURNING agent_id, status, repo, branch, activity, updated_at, expires_at
+        )
+        SELECT a.name,
+               a.display_name,
+               up.status,
+               up.repo,
+               up.branch,
+               up.activity,
+               up.updated_at,
+               up.expires_at > now() AS online
+        FROM up
+        JOIN agents a ON a.id = up.agent_id
         "#,
     )
     .bind(auth.agent_id)
+    .bind(&auth.session)
     .bind(&status)
     .bind(repo.as_deref())
     .bind(branch.as_deref())
     .bind(activity.as_deref())
     .bind(ttl as f64)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
 
-    let list = list_agents(pool, auth, false).await?;
-    list.agents
-        .into_iter()
-        .find(|a| a.name == auth.agent_name)
-        .ok_or_else(|| BusError::not_found("own presence row"))
+    let (name, display_name, status, repo, branch, activity, updated_at, online) = row;
+    Ok(AgentInfo {
+        name,
+        display_name,
+        status,
+        repo,
+        branch,
+        activity,
+        last_seen: ts_opt(updated_at),
+        online,
+    })
 }
 
 pub async fn list_agents(pool: &PgPool, auth: &AuthCtx, online_only: bool) -> BusResult<AgentList> {
@@ -116,7 +149,20 @@ pub async fn list_agents(pool: &PgPool, auth: &AuthCtx, online_only: bool) -> Bu
                p.updated_at,
                COALESCE(p.expires_at > now(), false) AS online
         FROM agents a
-        LEFT JOIN agent_presence p ON p.agent_id = a.id
+        -- One presence row per agent, not one per session. An agent can now
+        -- have several, and joining on agent_id alone would emit a duplicate
+        -- entry per session and inflate online_count with them. Reporting the
+        -- sessions properly, grouped under their agent, is the next change in
+        -- the stack; until then this picks the one that matters — live first,
+        -- then most recent — so the output stays exactly the shape every
+        -- existing client parses.
+        LEFT JOIN LATERAL (
+            SELECT pp.status, pp.repo, pp.branch, pp.activity, pp.updated_at, pp.expires_at
+            FROM agent_presence pp
+            WHERE pp.agent_id = a.id
+            ORDER BY (pp.expires_at > now()) DESC, pp.updated_at DESC
+            LIMIT 1
+        ) p ON true
         WHERE a.team_id = $1
           AND a.disabled_at IS NULL
           AND (NOT $2::bool OR COALESCE(p.expires_at > now(), false))

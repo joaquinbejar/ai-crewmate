@@ -11,6 +11,15 @@ use uuid::Uuid;
 
 pub const TOKEN_PREFIX: &str = "acs_";
 
+/// Header carrying the working context of the caller — in practice one per
+/// repository. Set once in an MCP client's configuration, it then rides on
+/// every request, which is the only option available: the transport is
+/// stateless, so there is nothing to negotiate once and remember.
+pub const SESSION_HEADER: &str = "x-crew-session";
+
+/// A session is a label, not a document. Long enough for a repository name.
+pub const MAX_SESSION_BYTES: usize = 64;
+
 /// Identity resolved from the bearer token, injected into the HTTP request
 /// extensions so tool handlers can read it. Every tool call is scoped to this.
 #[derive(Clone, Debug)]
@@ -19,6 +28,55 @@ pub struct AuthCtx {
     pub agent_name: String,
     pub team_id: Uuid,
     pub team_slug: String,
+    /// Which of the agent's concurrent working contexts is calling. Empty is
+    /// the shared session: what every client that sends no header gets, and
+    /// what every row created before sessions existed carries.
+    ///
+    /// This is deliberately *not* identity. It arrives from a header rather
+    /// than from the token, so it is caller-controlled and must never be used
+    /// to decide **which agent** is speaking — only to partition that agent's
+    /// own presence, claims and locks.
+    pub session: String,
+}
+
+/// Read the session label from the request headers.
+///
+/// Normalised the way channel names are (trimmed, lower-cased) so that
+/// `Market-Data` and `market-data` are one session rather than two that
+/// silently fail to see each other's claims.
+fn session_from_headers(headers: &axum::http::HeaderMap) -> Result<String, AuthError> {
+    let Some(value) = headers.get(SESSION_HEADER) else {
+        return Ok(String::new());
+    };
+    let raw = value
+        .to_str()
+        .map_err(|_| AuthError::BadSession("must be ASCII".to_owned()))?;
+    let label = raw.trim().to_lowercase();
+    if label.is_empty() {
+        return Ok(String::new());
+    }
+    if label.len() > MAX_SESSION_BYTES {
+        return Err(AuthError::BadSession(format!(
+            "is {} bytes; the limit is {MAX_SESSION_BYTES}. Use a short label, \
+             such as the repository name",
+            label.len()
+        )));
+    }
+    if label.chars().any(char::is_control) {
+        return Err(AuthError::BadSession(
+            "must not contain control characters".to_owned(),
+        ));
+    }
+    // Reserved: a direct message addresses `agent/session`, so a session
+    // containing a slash would make that address ambiguous.
+    if label.contains('/') {
+        return Err(AuthError::BadSession(
+            "must not contain '/', which separates agent from session when \
+             addressing a message"
+                .to_owned(),
+        ));
+    }
+    Ok(label)
 }
 
 /// Generate a fresh opaque token. Returned once, never stored in the clear.
@@ -107,6 +165,9 @@ pub async fn resolve_token(pool: &PgPool, raw: &str) -> Result<AuthCtx, AuthErro
         agent_name: row.agent_name,
         team_id: row.team_id,
         team_slug: row.team_slug,
+        // Filled in by the middleware from the request headers; the token
+        // itself says nothing about which session is using it.
+        session: String::new(),
     })
 }
 
@@ -118,6 +179,9 @@ pub enum AuthError {
     Internal,
     /// Too many requests for this token; carries the seconds to wait.
     Throttled(u64),
+    /// The `X-Crew-Session` header is present but unusable; carries what is
+    /// wrong with it.
+    BadSession(String),
 }
 
 impl IntoResponse for AuthError {
@@ -126,6 +190,8 @@ impl IntoResponse for AuthError {
             AuthError::Throttled(secs) => Some(secs),
             _ => None,
         };
+        // Decided before the match below, which consumes `self`.
+        let is_auth_challenge = matches!(self, AuthError::Missing | AuthError::Invalid);
         // The consumer is a language model: say what to do, not just what
         // went wrong.
         let (status, msg) = match self {
@@ -147,10 +213,18 @@ impl IntoResponse for AuthError {
                      something happens) instead of calling in a loop."
                 ),
             ),
+            AuthError::BadSession(why) => (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "the {SESSION_HEADER} header {why}. It labels which of your \
+                     concurrent working contexts is calling — one per repository \
+                     is the usual choice. Omit it entirely to use the shared session."
+                ),
+            ),
         };
         let body = serde_json::json!({ "error": msg });
         let mut resp = (status, axum::Json(body)).into_response();
-        if matches!(self, AuthError::Missing | AuthError::Invalid) {
+        if is_auth_challenge {
             resp.headers_mut().insert(
                 axum::http::header::WWW_AUTHENTICATE,
                 axum::http::HeaderValue::from_static("Bearer"),
@@ -202,8 +276,96 @@ pub async fn require_bearer(
         return Err(AuthError::Throttled(throttled.retry_after_secs));
     }
 
-    let ctx = resolve_token(&state.pool, &raw).await?;
-    tracing::debug!(agent = %ctx.agent_name, team = %ctx.team_slug, "authenticated");
+    // Validated before the token lookup: a malformed header is the caller's
+    // mistake either way, and rejecting it costs no query.
+    let session = session_from_headers(req.headers())?;
+
+    let mut ctx = resolve_token(&state.pool, &raw).await?;
+    ctx.session = session;
+    tracing::debug!(
+        agent = %ctx.agent_name,
+        team = %ctx.team_slug,
+        session = %ctx.session,
+        "authenticated"
+    );
     req.extensions_mut().insert(ctx);
     Ok(next.run(req).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    fn headers(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(SESSION_HEADER, HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    fn err(value: &str) -> String {
+        match session_from_headers(&headers(value)) {
+            Err(AuthError::BadSession(why)) => why,
+            other => panic!("expected BadSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn absent_header_is_the_shared_session() {
+        assert_eq!(session_from_headers(&HeaderMap::new()).unwrap(), "");
+    }
+
+    #[test]
+    fn blank_header_is_the_shared_session() {
+        // A client interpolating an unset variable sends whitespace, not a
+        // missing header. That must not become a session named " ".
+        assert_eq!(session_from_headers(&headers("   ")).unwrap(), "");
+    }
+
+    #[test]
+    fn label_is_normalised_like_a_channel_name() {
+        // Otherwise `Market-Data` and `market-data` are two sessions that
+        // cannot see each other's claims.
+        assert_eq!(
+            session_from_headers(&headers("  Market-Data  ")).unwrap(),
+            "market-data"
+        );
+    }
+
+    #[test]
+    fn over_long_label_is_rejected_with_the_limit() {
+        let why = err(&"a".repeat(MAX_SESSION_BYTES + 1));
+        assert!(why.contains(&MAX_SESSION_BYTES.to_string()), "{why}");
+    }
+
+    #[test]
+    fn label_at_the_limit_is_accepted() {
+        let label = "a".repeat(MAX_SESSION_BYTES);
+        assert_eq!(session_from_headers(&headers(&label)).unwrap(), label);
+    }
+
+    #[test]
+    fn slash_is_rejected_because_it_separates_agent_from_session() {
+        assert!(err("joaquin/market-data").contains('/'));
+    }
+
+    #[test]
+    fn internal_control_character_is_rejected() {
+        // HTTP permits a tab inside a field value, and trimming only removes
+        // the ones at the edges.
+        assert!(err("market\tdata").contains("control"));
+    }
+
+    #[test]
+    fn non_ascii_header_is_rejected() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            SESSION_HEADER,
+            HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        );
+        match session_from_headers(&h) {
+            Err(AuthError::BadSession(_)) => {}
+            other => panic!("expected BadSession, got {other:?}"),
+        }
+    }
 }
