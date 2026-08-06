@@ -48,6 +48,11 @@ enum Command {
         /// The token issued to this agent.
         #[arg(long)]
         token: String,
+        /// Working context for this config — usually the repository name.
+        /// Separates this agent's presence, claims and locks from its own
+        /// other sessions. Omit for the shared session.
+        #[arg(long)]
+        session: Option<String>,
     },
 }
 
@@ -226,8 +231,12 @@ async fn main() -> anyhow::Result<()> {
     // Commands that talk to the bus over HTTP (or to nothing at all) do not
     // need a database connection.
     match cli.command {
-        Command::McpConfig { url, token } => {
-            admin::print_mcp_config(&url, &token);
+        Command::McpConfig {
+            url,
+            token,
+            session,
+        } => {
+            admin::print_mcp_config(&url, &token, session.as_deref());
             return Ok(());
         }
         Command::Client(args) => return client::run(args).await,

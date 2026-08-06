@@ -306,13 +306,20 @@ pub async fn token_revoke(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
 }
 
 /// Print the exact `.mcp.json` block a teammate drops into their repo.
-pub fn print_mcp_config(url: &str, token: &str) {
+pub fn print_mcp_config(url: &str, token: &str, session: Option<&str>) {
+    let mut headers = serde_json::Map::new();
+    headers.insert("Authorization".into(), format!("Bearer {token}").into());
+    // Only when asked for: an empty header would name a session called "",
+    // which is the shared one you get by not sending the header at all.
+    if let Some(session) = session.map(str::trim).filter(|s| !s.is_empty()) {
+        headers.insert(crate::auth::SESSION_HEADER.into(), session.into());
+    }
     let cfg = serde_json::json!({
         "mcpServers": {
             "ai-crew-sync": {
                 "type": "http",
                 "url": url,
-                "headers": { "Authorization": format!("Bearer {token}") }
+                "headers": headers
             }
         }
     });

@@ -207,6 +207,8 @@ pub async fn render(State(state): State<DashboardState>, headers: HeaderMap) -> 
         agent_name: String::new(),
         team_id,
         team_slug: String::new(),
+        // The dashboard is a team-wide view, not a working context.
+        session: String::new(),
     };
 
     match build_page(&state.pool, &auth).await {

@@ -208,6 +208,43 @@ use *bien*, añade las convenciones del equipo al fichero de instrucciones del
 repo (`CLAUDE.md`, `AGENTS.md` o equivalente) — hay un snippet listo en
 `examples/CLAUDE.md-snippet.md`.
 
+### Sesiones: una persona, varios repos
+
+Un token identifica a una **persona**, y una persona suele tener varias
+sesiones de código abiertas a la vez — normalmente una por repo. Añade la
+cabecera `X-Crew-Session` para que cada una tenga su propio contexto de
+trabajo:
+
+```json
+{
+  "mcpServers": {
+    "ai-crew-sync": {
+      "type": "http",
+      "url": "https://bus.tu-empresa.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TEAM_BUS_TOKEN}",
+        "X-Crew-Session": "market-data"
+      }
+    }
+  }
+}
+```
+
+La etiqueta es libre, hasta 64 bytes, y se normaliza como un nombre de canal
+(sin espacios sobrantes y en minúsculas, para que `Market-Data` y
+`market-data` sean una sola sesión y no dos que no se ven entre sí). El nombre
+del repo es la elección natural.
+
+Una sesión **no** es identidad. Llega en una cabecera y no en el token, así
+que nunca puede hacerte hablar por otro; solo separa tu presencia, tus claims
+y tus locks de tus otras sesiones. Si omites la cabecera tienes la sesión
+compartida, que es exactamente como se comportaba el bus antes de que las
+sesiones existieran.
+
+El cliente de consola acepta `--session` (o `BUS_SESSION`), y
+`ai-crew-sync mcp-config --session market-data` mete la cabecera en el bloque
+generado.
+
 ## Cliente de consola
 
 El mismo binario habla con el bus desde la terminal, como un agente más — útil

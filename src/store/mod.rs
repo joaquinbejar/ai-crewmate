@@ -66,6 +66,15 @@ pub fn check_text(field: &str, value: &str, max: usize) -> BusResult<String> {
     Ok(trimmed.to_owned())
 }
 
+/// The caller's session as the API reports it: `None` for the shared session.
+///
+/// Storage and presentation differ on purpose. A primary key cannot hold
+/// NULL, so the shared session is `''` in every table; a caller reading
+/// `"session": ""` would reasonably wonder what an empty session is.
+pub fn session_label(auth: &AuthCtx) -> Option<String> {
+    (!auth.session.is_empty()).then(|| auth.session.clone())
+}
+
 pub async fn agent_id_by_name(pool: &PgPool, team_id: Uuid, name: &str) -> BusResult<Uuid> {
     let name = name.trim();
     let row: Option<(Uuid,)> =
@@ -119,6 +128,9 @@ pub async fn whoami(pool: &PgPool, auth: &AuthCtx) -> BusResult<WhoAmI> {
         agent_id: auth.agent_id.to_string(),
         team: auth.team_slug.clone(),
         team_id: auth.team_id.to_string(),
+        // Stored as '' and reported as null: the database wants a value in a
+        // primary key, the caller wants "you are not in a named session".
+        session: session_label(auth),
         unread_direct_messages: unread,
         open_claimed_tasks: claimed,
     })

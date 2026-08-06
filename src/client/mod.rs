@@ -34,6 +34,12 @@ pub struct ClientArgs {
     #[arg(long, env = "BUS_TOKEN", hide_env_values = true)]
     pub token: String,
 
+    /// Which working context this is — usually the repository name. Separates
+    /// your presence, task claims and locks from your other sessions. Omit it
+    /// to share one context with them.
+    #[arg(long, env = "BUS_SESSION")]
+    pub session: Option<String>,
+
     /// Print raw JSON instead of the human-readable rendering.
     #[arg(long, global = true)]
     pub json: bool,
@@ -270,6 +276,19 @@ pub async fn run(args: ClientArgs) -> anyhow::Result<()> {
     let mut config = StreamableHttpClientTransportConfig::with_uri(args.url.clone());
     config.auth_header = Some(args.token.clone());
     config.allow_stateless = true;
+    if let Some(session) = args
+        .session
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let value = session
+            .parse()
+            .with_context(|| format!("--session '{session}' is not a valid HTTP header value"))?;
+        config
+            .custom_headers
+            .insert(crate::auth::SESSION_HEADER.parse()?, value);
+    }
     let transport = StreamableHttpClientTransport::from_config(config);
 
     let client = ClientInfo::default()

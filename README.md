@@ -207,6 +207,42 @@ use them *well*, add the team conventions to the repo's agent instructions
 file (`CLAUDE.md`, `AGENTS.md` or equivalent) — there is a ready-made snippet
 in `examples/CLAUDE.md-snippet.md`.
 
+### Sessions: one person, several repositories
+
+A token identifies a **person**, and a person usually runs several coding
+sessions at once — typically one per repository. Add the `X-Crew-Session`
+header so each one gets its own working context:
+
+```json
+{
+  "mcpServers": {
+    "ai-crew-sync": {
+      "type": "http",
+      "url": "https://bus.your-company.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TEAM_BUS_TOKEN}",
+        "X-Crew-Session": "market-data"
+      }
+    }
+  }
+}
+```
+
+The label is free-form, up to 64 bytes, and normalised the way a channel name
+is (trimmed and lower-cased, so `Market-Data` and `market-data` are one
+session rather than two that cannot see each other). The repository name is
+the obvious choice.
+
+A session is **not** identity. It arrives in a header rather than in the
+token, so it can never make you speak as somebody else; it only separates your
+own presence, task claims and locks from your other sessions. Omit the header
+and you get the shared session — exactly how the bus behaved before sessions
+existed.
+
+The console client takes `--session` (or `BUS_SESSION`), and
+`ai-crew-sync mcp-config --session market-data` writes the header into the
+generated block.
+
 ## Console client
 
 The same binary talks to the bus from the terminal, as one more agent —
