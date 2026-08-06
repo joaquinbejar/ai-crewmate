@@ -86,6 +86,58 @@ assert isinstance(h, int) and 1 <= h <= 336, h
 done
 ok "BUS_DIGEST_HOURS guard keeps the digest request well-formed"
 
+# --- the Stop drain blocks once per question, and only when there is one ----
+cp "$ROOT/stop-drain.sh" "$WORK/bin/stop-drain.sh"
+
+drain() {
+    # $1 = inbox JSON-RPC response, $2 = session id
+    cat > "$WORK/bin/bus-call.sh" <<FAKE
+#!/bin/sh
+cat <<'RESP'
+$1
+RESP
+FAKE
+    chmod +x "$WORK/bin/bus-call.sh"
+    printf '{"session_id":"%s"}' "$2" \
+        | TMPDIR="$WORK" BUS_URL=http://example.invalid/mcp BUS_TOKEN=acs_test \
+          sh "$WORK/bin/stop-drain.sh" 2>/dev/null
+}
+
+NO_QUESTION='{"result":{"structuredContent":{"messages":[{"id":7,"from":"dani","body":"fyi","metadata":{}}]}}}'
+QUESTION='{"result":{"structuredContent":{"messages":[{"id":9,"from":"dani","from_session":"api","body":"is it green?","metadata":{"question":true}}]}}}'
+
+out="$(drain "$NO_QUESTION" sess-a)"
+[ -z "$out" ] && ok "no pending question means the session stops normally" \
+    || bad "drain stays quiet without a question" "$out"
+
+out="$(drain "$QUESTION" sess-b)"
+printf '%s' "$out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["decision"] == "block", d
+ctx = d["hookSpecificOutput"]["additionalContext"]
+assert "is it green?" in ctx, ctx
+assert "dani/api" in ctx, "the reply must be addressed to the asking session"
+assert "reply_to: 9" in ctx, ctx
+' 2>/dev/null && ok "a pending question holds the session open with the question" \
+    || bad "drain blocks on a question" "$out"
+
+# The loop guard: blocking again on the same question would trap the session
+# going round forever.
+out="$(drain "$QUESTION" sess-b)"
+[ -z "$out" ] && ok "the same question never blocks the session twice" \
+    || bad "drain loop guard" "$out"
+
+# A different session has its own guard, so it still gets its turn.
+out="$(drain "$QUESTION" sess-c)"
+[ -n "$out" ] && ok "the guard is per session, not global" \
+    || bad "drain guard is per session" "empty"
+
+# Unconfigured bus: silent, as every hook must be.
+out="$(printf '{"session_id":"sess-d"}' | TMPDIR="$WORK" sh "$WORK/bin/stop-drain.sh" 2>/dev/null)"
+[ -z "$out" ] && ok "no BUS_URL/BUS_TOKEN means the hook does nothing" \
+    || bad "drain without a configured bus" "$out"
+
 # --- every tool the hooks call exists in the served schema ------------------
 # Cheap coupling check: the tool names the scripts use must appear in the
 # server's tool router. Catches a rename before a user's session breaks.

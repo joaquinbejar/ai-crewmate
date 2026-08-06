@@ -17,9 +17,15 @@ case "$HOURS" in
     *) [ "$HOURS" -ge 1 ] && [ "$HOURS" -le 336 ] || HOURS=8 ;;
 esac
 
+# Suggested session label when BUS_SESSION is unset: the repository this
+# checkout belongs to. Only a suggestion — the header is read from the
+# environment when the client launches, so a hook cannot set it.
+SUGGESTED="$(git config --get remote.origin.url 2>/dev/null \
+  | sed -e 's#\.git$##' -e 's#.*[:/][^/]*/##')"
+
 WHO="$("$DIR/bus-call.sh" whoami 2>/dev/null || true)"
 DIG="$("$DIR/bus-call.sh" team_digest "{\"hours\":$HOURS}" 2>/dev/null || true)"
-export WHO DIG BUS_DIGEST_HOURS="$HOURS"
+export WHO DIG BUS_DIGEST_HOURS="$HOURS" SUGGESTED BUS_SESSION="${BUS_SESSION:-}"
 
 python3 - <<'PY' 2>/dev/null || true
 import json, os
@@ -41,6 +47,25 @@ if who:
         f"[ai-crew-sync] You are agent '{who.get('agent')}' on team '{who.get('team')}'. "
         "The team coordination bus (MCP server 'ai-crew-sync') is connected."
     )
+    session = who.get("session")
+    if session:
+        where = f"in the '{session}' session"
+        channel = who.get("default_channel")
+        if channel:
+            where += f", posting to #{channel} by default"
+        lines.append(
+            f"- You are {where}. Your presence, task claims and locks here are "
+            "separate from your other sessions, and teammates can address this "
+            f"window directly as '{who.get('agent')}/{session}'."
+        )
+    else:
+        suggested = (os.environ.get("SUGGESTED") or "").strip()
+        hint = f" e.g. export BUS_SESSION={suggested}" if suggested else ""
+        lines.append(
+            "- This is the shared session (no BUS_SESSION set), so presence, task "
+            "claims and locks are shared with every other window using this token. "
+            f"Set BUS_SESSION per repository to separate them{hint}."
+        )
     dm = who.get("unread_direct_messages") or 0
     ct = who.get("open_claimed_tasks") or 0
     if dm:
@@ -55,7 +80,9 @@ if dig:
     lines.append(f"- Team activity, last {hours}h (team_digest): {compact}")
 lines.append(
     "- Conventions: claim_task before working on shared tasks, renew_task_lease on long ones, "
-    "post progress to the relevant channel, and ask_agent when you need a teammate's reply."
+    "post progress to the relevant channel, and ask_agent when you need a teammate's reply. "
+    "Address a specific window as 'agent/session' when the question is about work only that "
+    "window can see."
 )
 
 print(json.dumps({

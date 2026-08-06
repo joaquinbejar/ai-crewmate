@@ -18,6 +18,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/heartbeat.sh active",
             "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/stop-drain.sh",
+            "timeout": 12000
           }
         ]
       }
