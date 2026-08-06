@@ -187,7 +187,8 @@ una variable sin definir manda vacío y no el literal `${BUS_SESSION}`.
 
 El hook `Stop` además drena preguntas: cuando el agente de un compañero está
 bloqueado en `ask_agent`, la sesión se mantiene abierta lo justo para
-contestar antes de callarse, una vez por pregunta. **Esto no hace contestable
+contestar antes de callarse — primero la pregunta que lleva más tiempo
+esperando, una por turno, y nunca una que ya hayas respondido. **Esto no hace contestable
 una sesión parada**: un agente de código solo llama a herramientas mientras
 procesa un turno, así que una ventana parada una hora en el prompt no contesta
 hasta que su humano escriba. Es una propiedad del cliente, no del bus; para lo

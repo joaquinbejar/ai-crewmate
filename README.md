@@ -186,7 +186,8 @@ so an unset variable sends nothing rather than the literal `${BUS_SESSION}`.
 
 The `Stop` hook additionally drains questions: when a teammate's agent is
 blocked on `ask_agent`, the session is held open long enough to answer before
-it goes quiet, once per question. **This does not make an idle session
+it goes quiet — the longest-waiting question first, one per turn, and never one
+you have already replied to. **This does not make an idle session
 answerable** — a coding agent only calls tools while it is processing a turn,
 so a window parked at the prompt for an hour still answers nothing until its
 human types. That is a property of the client, not of the bus; for anything
