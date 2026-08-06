@@ -46,6 +46,10 @@ pub struct WhoAmI {
 pub struct AgentInfo {
     pub name: String,
     pub display_name: Option<String>,
+    /// Which working context the fields below describe — usually a repository
+    /// name. `null` is the shared session, used by clients that send no
+    /// `X-Crew-Session` header.
+    pub session: Option<String>,
     /// One of `active`, `idle`, `offline`. `offline` means the presence lease
     /// expired, i.e. the agent has not sent a heartbeat recently.
     pub status: String,
@@ -54,12 +58,33 @@ pub struct AgentInfo {
     /// Free-text description of what this agent is currently doing.
     pub activity: Option<String>,
     pub last_seen: Option<String>,
+    /// True when *any* of this agent's sessions has a live presence lease.
+    pub online: bool,
+    /// Every working context this agent has open, most recently active first.
+    /// Absent when there is only one — the fields above already describe it.
+    /// A teammate with several entries here is working in several repositories
+    /// at once, and each one claims tasks and holds locks independently.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub sessions: Vec<AgentSession>,
+}
+
+/// One working context of an agent: what that session is doing right now.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AgentSession {
+    /// `null` is the shared session.
+    pub session: Option<String>,
+    pub status: String,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub activity: Option<String>,
+    pub last_seen: Option<String>,
     pub online: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AgentList {
     pub agents: Vec<AgentInfo>,
+    /// Agents with at least one live session — people, not sessions.
     pub online_count: usize,
 }
 

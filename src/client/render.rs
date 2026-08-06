@@ -10,6 +10,15 @@ pub(super) fn field<'v>(v: &'v Value, key: &str) -> &'v str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// Where an agent (or one of its sessions) is working, as a leading fragment.
+fn agent_place(v: &Value) -> String {
+    match (v["repo"].as_str(), v["branch"].as_str()) {
+        (Some(r), Some(b)) => format!(" {r}@{b}"),
+        (Some(r), None) => format!(" {r}"),
+        _ => String::new(),
+    }
+}
+
 fn render_messages(value: &Value) {
     let messages = value["messages"].as_array().cloned().unwrap_or_default();
     if messages.is_empty() {
@@ -125,18 +134,30 @@ pub(super) fn render(cmd: &ClientCmd, value: &Value) -> anyhow::Result<()> {
         }
         ClientCmd::Agents { .. } => {
             for a in value["agents"].as_array().cloned().unwrap_or_default() {
-                let place = match (a["repo"].as_str(), a["branch"].as_str()) {
-                    (Some(r), Some(b)) => format!(" {r}@{b}"),
-                    (Some(r), None) => format!(" {r}"),
-                    _ => String::new(),
-                };
-                println!(
-                    "{:<20} {:<8}{} {}",
-                    field(&a, "name"),
-                    field(&a, "status"),
-                    place,
-                    field(&a, "activity"),
-                );
+                let name = field(&a, "name");
+                // `sessions` is only present when there is more than one, so
+                // the common case prints exactly one line per teammate.
+                match a["sessions"].as_array() {
+                    Some(sessions) if !sessions.is_empty() => {
+                        println!("{name}");
+                        for s in sessions {
+                            println!(
+                                "  /{:<17} {:<8}{} {}",
+                                s["session"].as_str().unwrap_or("(shared)"),
+                                field(s, "status"),
+                                agent_place(s),
+                                field(s, "activity"),
+                            );
+                        }
+                    }
+                    _ => println!(
+                        "{:<20} {:<8}{} {}",
+                        name,
+                        field(&a, "status"),
+                        agent_place(&a),
+                        field(&a, "activity"),
+                    ),
+                }
             }
             println!("({} online)", value["online_count"]);
         }

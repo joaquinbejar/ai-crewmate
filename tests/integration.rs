@@ -2642,3 +2642,107 @@ async fn a_malformed_session_header_is_rejected_before_the_token_is_used() {
 
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn presence_is_tracked_per_session_not_per_person() {
+    let h = require_db!("t_presence_sessions");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let dani = seed_agent(&h.pool, "layerv", "dani").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let core = connect_with_session(&h.base, &token, "core-manager").await;
+
+    call(
+        &market,
+        "heartbeat",
+        json!({"repo": "Layer-V/market-data", "branch": "devops/scanning"}),
+    )
+    .await;
+    call(
+        &core,
+        "heartbeat",
+        json!({"repo": "Layer-V/core-manager", "branch": "issue-151"}),
+    )
+    .await;
+
+    // Before this change the second heartbeat overwrote the first, and the
+    // board showed one repo flapping between the two.
+    let seen = call(&market, "list_agents", json!({})).await;
+    let joaquin = seen["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "joaquin")
+        .expect("joaquin is on the bus");
+
+    let sessions = joaquin["sessions"].as_array().expect("two contexts listed");
+    assert_eq!(
+        sessions.len(),
+        2,
+        "one entry per working context: {joaquin}"
+    );
+    let mut repos: Vec<&str> = sessions
+        .iter()
+        .map(|s| s["repo"].as_str().unwrap_or_default())
+        .collect();
+    repos.sort_unstable();
+    assert_eq!(repos, ["Layer-V/core-manager", "Layer-V/market-data"]);
+
+    let mut labels: Vec<&str> = sessions
+        .iter()
+        .map(|s| s["session"].as_str().unwrap_or_default())
+        .collect();
+    labels.sort_unstable();
+    assert_eq!(labels, ["core-manager", "market-data"]);
+
+    // One person, not two: three live sessions across two people is two online.
+    let dani_client = connect(&h.base, &dani).await;
+    call(
+        &dani_client,
+        "heartbeat",
+        json!({"repo": "Layer-V/core-manager"}),
+    )
+    .await;
+    let seen = call(&market, "list_agents", json!({})).await;
+    assert_eq!(
+        seen["online_count"], 2,
+        "online_count counts teammates, not sessions: {seen}"
+    );
+
+    // An agent with a single shared session keeps the flat shape it had before
+    // sessions existed — no session level appears at all.
+    let dani_row = seen["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "dani")
+        .unwrap();
+    assert!(
+        dani_row.get("sessions").is_none(),
+        "a single session must not grow a nested list: {dani_row}"
+    );
+    assert_eq!(dani_row["session"], Value::Null);
+    assert_eq!(dani_row["repo"], "Layer-V/core-manager");
+
+    // One session going stale leaves the others alone.
+    sqlx::query(
+        "UPDATE agent_presence SET expires_at = now() - interval '1 minute' WHERE session = $1",
+    )
+    .bind("core-manager")
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let seen = call(&market, "list_agents", json!({"online_only": true})).await;
+    let joaquin = seen["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "joaquin")
+        .expect("the live session keeps joaquin online");
+    assert_eq!(joaquin["repo"], "Layer-V/market-data");
+
+    for client in [market, core, dani_client] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}

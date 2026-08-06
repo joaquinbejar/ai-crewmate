@@ -11,7 +11,7 @@ This machine is connected to a shared coordination bus (MCP server `ai-crew-sync
 1. `whoami` → confirm identity, unread DMs, and tasks you already claimed.
 2. `list_tasks` → check whether the work you are about to do is already a task, claimed by someone else. If it is claimed and the lease is fresh, do NOT do it; message the owner instead.
 3. If it is not tracked, `create_task` first, then `claim_task` it. Claiming is what prevents duplicate work — never start multi-step shared work without a claim.
-4. `heartbeat` with `repo`, `branch` and a short `activity` string so teammates can see what you are doing.
+4. `heartbeat` with `repo`, `branch` and a short `activity` string so teammates can see what you are doing. Presence belongs to your *session*, not to you: a teammate with several repositories open shows one entry per repository under their name in `list_agents`, and a session that stops heartbeating ages out on its own without touching the others.
 
 ## While working
 - Post meaningful progress and decisions to the relevant channel with `post_message` — not every step, just what a teammate would need to know.
