@@ -3038,6 +3038,80 @@ async fn one_session_can_ask_another_session_of_the_same_person() {
 }
 
 #[tokio::test]
+async fn a_sibling_session_cannot_answer_for_the_one_that_was_asked() {
+    let h = require_db!("t_session_ask_sibling");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let dani = seed_agent(&h.pool, "layerv", "dani").await;
+
+    let general = connect_with_session(&h.base, &token, "general").await;
+    let dani_api = connect_with_session(&h.base, &dani, "api").await;
+    let dani_web = connect_with_session(&h.base, &dani, "web").await;
+
+    // Ask one specific window of dani's.
+    let asker = tokio::spawn(async move {
+        let r = call(
+            &general,
+            "ask_agent",
+            json!({"to": "dani/api", "question": "did the migration land?",
+                   "timeout_seconds": 8}),
+        )
+        .await;
+        let _ = general.cancel().await;
+        r
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // A different window of the same person answers. It must NOT satisfy the
+    // wait: the question was addressed to `api`, and `web` cannot see what
+    // `api` was asked about.
+    call(
+        &dani_web,
+        "post_message",
+        json!({"to": "joaquin/general", "body": "no idea, wrong window"}),
+    )
+    .await;
+
+    let out = asker.await.unwrap();
+    assert_eq!(
+        out["answered"], false,
+        "a sibling session must not answer for the one that was asked: {out}"
+    );
+    let qid = out["question_message_id"].as_i64().unwrap();
+
+    // The window that was actually asked answers, and resuming finds it.
+    call(
+        &dani_api,
+        "post_message",
+        json!({"to": "joaquin/general", "body": "yes, 0009 applied"}),
+    )
+    .await;
+    let general = connect_with_session(&h.base, &token, "general").await;
+    let resumed = call(
+        &general,
+        "ask_agent",
+        json!({"to": "dani/api", "resume_message_id": qid, "timeout_seconds": 5}),
+    )
+    .await;
+    assert_eq!(resumed["answered"], true, "{resumed}");
+    assert_eq!(resumed["answer"]["body"], "yes, 0009 applied");
+
+    // Resuming that question against a different address is refused, or a
+    // timed-out question could collect another session's answer.
+    let err = call_expect_error(
+        &general,
+        "ask_agent",
+        json!({"to": "dani/web", "resume_message_id": qid, "timeout_seconds": 5}),
+    )
+    .await;
+    assert!(err.contains("this session sent"), "{err}");
+
+    for client in [general, dani_api, dani_web] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn wait_for_updates_does_not_wake_a_sibling_session() {
     let h = require_db!("t_session_wait");
     let token = seed_agent(&h.pool, "layerv", "joaquin").await;

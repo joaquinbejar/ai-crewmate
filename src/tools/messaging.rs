@@ -36,6 +36,28 @@ pub struct CreateChannelArgs {
     pub topic: Option<String>,
 }
 
+/// Does this agent have a live presence row for some *other* session?
+///
+/// Used to tell an impossible question from a reasonable one: asking yourself
+/// as a person is fine when another of your windows is around to answer, and
+/// hopeless when it is not.
+async fn has_another_live_session(
+    pool: &sqlx::PgPool,
+    auth: &crate::auth::AuthCtx,
+) -> Result<bool, crate::error::BusError> {
+    let (other,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (
+             SELECT 1 FROM agent_presence
+             WHERE agent_id = $1 AND session <> $2 AND expires_at > now()
+         )",
+    )
+    .bind(auth.agent_id)
+    .bind(&auth.session)
+    .fetch_one(pool)
+    .await?;
+    Ok(other)
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PostMessageArgs {
     /// Channel to broadcast to. Mutually exclusive with `to`.
@@ -235,11 +257,26 @@ impl Bus {
         // addressing — a coordinating window handing work to the one with the
         // repository open. Only asking *this* window is impossible: nothing
         // would ever read the question, and the call would block until timeout.
-        if target_id == auth.agent_id && target_session.as_deref().unwrap_or("") == auth.session {
-            return Err(crate::error::BusError::invalid(
-                "that address is this session, so nothing would ever read the question.                  Ask a teammate, or another of your own sessions as 'you/<session>' —                  list_agents shows which are open.",
-            )
-            .into());
+        // Asking another of your own sessions is the point of session
+        // addressing. What cannot work is an address only *this* window can
+        // read, because the call blocks until something answers it.
+        if target_id == auth.agent_id {
+            let only_me = match target_session.as_deref() {
+                // This exact window: nothing else will ever read it.
+                Some(s) => s == auth.session,
+                // The person: another live window of yours can answer, so this
+                // is only hopeless when there is no other one.
+                None => !has_another_live_session(&self.db, &auth).await?,
+            };
+            if only_me {
+                return Err(crate::error::BusError::invalid(
+                    "nothing would ever read that question: the address resolves to this \
+                     session and no other window of yours is live. Ask a teammate, or \
+                     another of your own sessions as 'you/<session>' — list_agents shows \
+                     which are open.",
+                )
+                .into());
+            }
         }
 
         // Subscribe before posting or checking so an answer arriving in
@@ -248,7 +285,14 @@ impl Bus {
 
         let question_id = match args.resume_message_id {
             Some(id) => {
-                messaging::verify_question(&self.db, &auth, target_id, id).await?;
+                messaging::verify_question(
+                    &self.db,
+                    &auth,
+                    target_id,
+                    target_session.as_deref(),
+                    id,
+                )
+                .await?;
                 id
             }
             None => {
@@ -284,8 +328,14 @@ impl Bus {
         loop {
             // Check the database first: covers resumed asks whose answer
             // already landed, and events lost while lagging.
-            if let Some(answer) =
-                messaging::find_answer(&self.db, &auth, target_id, question_id).await?
+            if let Some(answer) = messaging::find_answer(
+                &self.db,
+                &auth,
+                target_id,
+                target_session.as_deref(),
+                question_id,
+            )
+            .await?
             {
                 return Ok(Json(AskResult {
                     answered: true,
@@ -327,8 +377,14 @@ impl Bus {
 
             if !woke {
                 // One last look: the answer may have raced the deadline.
-                let answer =
-                    messaging::find_answer(&self.db, &auth, target_id, question_id).await?;
+                let answer = messaging::find_answer(
+                    &self.db,
+                    &auth,
+                    target_id,
+                    target_session.as_deref(),
+                    question_id,
+                )
+                .await?;
                 let answered = answer.is_some();
                 return Ok(Json(AskResult {
                     answered,
