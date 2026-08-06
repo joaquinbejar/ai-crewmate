@@ -259,9 +259,20 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
             (Some(r), None) => esc(r),
             _ => String::new(),
         };
+        // The session qualifies the name rather than taking its own column:
+        // most teams have one context per person, and an empty column on every
+        // row would cost more than it explains.
+        let who = if a.session.is_empty() {
+            format!("<strong>{}</strong>", esc(&a.name))
+        } else {
+            format!(
+                "<strong>{}</strong> <span class=\"muted\">/{}</span>",
+                esc(&a.name),
+                esc(&a.session)
+            )
+        };
         agent_rows.push_str(&format!(
-            "<tr><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td class=\"muted\">{}</td></tr>",
-            esc(&a.name),
+            "<tr><td>{who}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"muted\">{}</td></tr>",
             dot,
             place,
             esc(a.activity.as_deref().unwrap_or("")),

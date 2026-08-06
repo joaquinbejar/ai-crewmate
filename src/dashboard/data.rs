@@ -19,6 +19,9 @@ pub struct Totals {
 #[derive(sqlx::FromRow)]
 pub struct AgentRow {
     pub name: String,
+    /// Working context of this row. Empty is the shared session; an agent with
+    /// several open produces one row each.
+    pub session: String,
     pub status: Option<String>,
     pub repo: Option<String>,
     pub branch: Option<String>,
@@ -120,7 +123,10 @@ async fn load_totals(pool: &PgPool, team_id: Uuid) -> Result<Totals, sqlx::Error
     sqlx::query_as(
         r#"
         SELECT
-            (SELECT count(*) FROM agents a
+            -- DISTINCT because an agent has one presence row per session:
+            -- someone working in three repositories is one teammate online,
+            -- not three.
+            (SELECT count(DISTINCT a.id) FROM agents a
               JOIN agent_presence p ON p.agent_id = a.id
              WHERE a.team_id = $1 AND p.expires_at > now())          AS agents_online,
             (SELECT count(*) FROM tasks
@@ -140,7 +146,12 @@ async fn load_totals(pool: &PgPool, team_id: Uuid) -> Result<Totals, sqlx::Error
 async fn load_agents(pool: &PgPool, team_id: Uuid) -> Result<Vec<AgentRow>, sqlx::Error> {
     sqlx::query_as(
         r#"
+        -- One row per working context: a teammate with three repositories open
+        -- appears three times, each with its own repo, branch and activity.
+        -- Collapsing them would put one of the three on screen and drop the
+        -- rest, which is the flapping board this whole change exists to fix.
         SELECT a.name,
+               COALESCE(p.session, '') AS session,
                p.status,
                p.repo,
                p.branch,
@@ -150,7 +161,9 @@ async fn load_agents(pool: &PgPool, team_id: Uuid) -> Result<Vec<AgentRow>, sqlx
         FROM agents a
         LEFT JOIN agent_presence p ON p.agent_id = a.id
         WHERE a.team_id = $1 AND a.disabled_at IS NULL
-        ORDER BY COALESCE(p.expires_at > now(), false) DESC, a.name
+        ORDER BY COALESCE(p.expires_at > now(), false) DESC,
+                 a.name,
+                 p.updated_at DESC NULLS LAST
         "#,
     )
     .bind(team_id)
