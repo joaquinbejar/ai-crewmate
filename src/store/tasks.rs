@@ -327,7 +327,12 @@ pub async fn list_tasks(
         r#"{TASK_SELECT}
            WHERE t.team_id = $1
              AND ($2::text IS NULL OR t.status = $2)
-             AND (NOT $3::bool OR t.claimed_by = $4)
+             -- "mine" means this session's, matching whoami, renew and
+             -- release. Matching the agent alone would report a task your
+             -- core-manager window is holding as this window's own work,
+             -- which is the duplication the session check exists to stop.
+             AND (NOT $3::bool
+                  OR (t.claimed_by = $4 AND COALESCE(t.claimed_session, '') = $6))
            ORDER BY
              CASE t.status WHEN 'claimed' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
              t.updated_at DESC
@@ -338,6 +343,7 @@ pub async fn list_tasks(
     .bind(mine_only)
     .bind(auth.agent_id)
     .bind(limit)
+    .bind(&auth.session)
     .fetch_all(pool)
     .await?;
 
@@ -610,6 +616,10 @@ pub async fn release_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult
         UPDATE tasks
         SET status = 'open',
             claimed_by = NULL,
+            -- Cleared with the holder it belongs to. Leaving it behind made a
+            -- released task report claimed_by null next to a session name,
+            -- which reads as an active holder that does not exist.
+            claimed_session = NULL,
             claimed_at = NULL,
             lease_expires_at = NULL,
             updated_at = now()

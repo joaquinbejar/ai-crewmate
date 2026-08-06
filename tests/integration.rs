@@ -2812,6 +2812,28 @@ async fn a_claim_belongs_to_a_session_not_to_a_person() {
     )
     .await;
 
+    // "mine" means this session's, the same rule whoami/renew/release use.
+    let mine = call(&market, "list_tasks", json!({"mine_only": true})).await;
+    assert_eq!(mine["tasks"].as_array().unwrap().len(), 1);
+    let theirs = call(&core, "list_tasks", json!({"mine_only": true})).await;
+    assert_eq!(
+        theirs["tasks"].as_array().unwrap().len(),
+        0,
+        "another window of the same token does not own this claim: {theirs}"
+    );
+
+    // Releasing clears the session with the holder it belongs to; a released
+    // task reporting claimed_by null next to a session name would describe an
+    // active holder that does not exist.
+    let released = call(&market, "release_task", json!({"key": "market-data#42"})).await;
+    assert_eq!(released["status"], "open");
+    assert_eq!(released["claimed_by"], Value::Null);
+    assert!(
+        released.get("claimed_session").is_none_or(|v| v.is_null()),
+        "the released task must name no holding session: {released}"
+    );
+    call(&market, "claim_task", json!({"key": "market-data#42"})).await;
+
     // An expired lease is stealable by anyone, including another session.
     sqlx::query("UPDATE tasks SET lease_expires_at = now() - interval '1 minute'")
         .execute(&h.pool)

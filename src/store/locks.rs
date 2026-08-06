@@ -182,7 +182,8 @@ pub async fn release_lock(pool: &PgPool, auth: &AuthCtx, name: &str) -> BusResul
                 .map(|s| format!("'{s}'"))
                 .unwrap_or_else(|| "shared".to_owned());
             Err(BusError::conflict(format!(
-                "lock '{name}' is held by your own {theirs} session, not by this                  one — release it there, or wait for it to expire"
+                "lock '{name}' is held by your own {theirs} session, not by this one — \
+                 release it there, or wait for it to expire"
             )))
         }
         Some((holder, session)) => {
