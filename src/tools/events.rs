@@ -7,7 +7,6 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use super::{Bus, auth_of};
 use crate::{
@@ -31,17 +30,26 @@ pub struct WaitArgs {
     pub kinds: Option<Vec<String>>,
 }
 
-async fn unread_dms(pool: &PgPool, agent_id: Uuid) -> Result<i64, sqlx::Error> {
+async fn unread_dms(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Error> {
+    // This session's inbox: what is addressed to it by name, plus what is
+    // addressed to the person. Another window's mail is not this window's
+    // backlog, and each keeps its own cursor.
     sqlx::query_scalar(
         r#"
         SELECT count(*)
         FROM messages m
-        LEFT JOIN read_cursors c ON c.agent_id = $1 AND c.scope = 'inbox'
+        LEFT JOIN read_cursors c ON c.agent_id = $1 AND c.scope = $3
         WHERE m.recipient_agent_id = $1
           AND m.id > COALESCE(c.last_message_id, 0)
+          AND (m.recipient_session IS NULL OR m.recipient_session = $2)
         "#,
     )
-    .bind(agent_id)
+    .bind(auth.agent_id)
+    .bind(&auth.session)
+    .bind(crate::store::messaging::cursor_scope(
+        "inbox",
+        &auth.session,
+    ))
     .fetch_one(pool)
     .await
 }
@@ -51,15 +59,19 @@ async fn unread_anything(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Err
         r#"
         SELECT count(*)
         FROM messages m
-        LEFT JOIN read_cursors c ON c.agent_id = $1 AND c.scope = 'all'
+        LEFT JOIN read_cursors c ON c.agent_id = $1 AND c.scope = $4
         WHERE m.team_id = $2
           AND m.id > COALESCE(c.last_message_id, 0)
           AND m.sender_agent_id <> $1
-          AND (m.channel_id IS NOT NULL OR m.recipient_agent_id = $1)
+          AND (m.channel_id IS NOT NULL
+               OR (m.recipient_agent_id = $1
+                   AND (m.recipient_session IS NULL OR m.recipient_session = $3)))
         "#,
     )
     .bind(auth.agent_id)
     .bind(auth.team_id)
+    .bind(&auth.session)
+    .bind(crate::store::messaging::cursor_scope("all", &auth.session))
     .fetch_one(pool)
     .await
 }
@@ -200,7 +212,7 @@ impl Bus {
             ErrorData::internal_error("database error", None)
         })?;
         if pending > 0 && wants("message") {
-            let dms = unread_dms(&self.db, auth.agent_id).await.unwrap_or(0);
+            let dms = unread_dms(&self.db, &auth).await.unwrap_or(0);
             return Ok(Json(WaitResult {
                 woke: true,
                 timed_out: false,
@@ -234,7 +246,8 @@ impl Bus {
                 },
             };
 
-            if !event.visible_to(auth.team_id, auth.agent_id) || !wants(event.kind()) {
+            if !event.visible_to(auth.team_id, auth.agent_id, &auth.session) || !wants(event.kind())
+            {
                 continue;
             }
             // Your own messages are not news to you.
@@ -246,7 +259,7 @@ impl Bus {
                 // Grace window: batch events that arrive together.
                 let grace = tokio::time::Instant::now() + Duration::from_millis(150);
                 while let Ok(Ok(more)) = tokio::time::timeout_at(grace, rx.recv()).await {
-                    if more.visible_to(auth.team_id, auth.agent_id)
+                    if more.visible_to(auth.team_id, auth.agent_id, &auth.session)
                         && wants(more.kind())
                         && !(more.kind() == "message"
                             && more.sender_agent_id() == Some(auth.agent_id))
@@ -258,7 +271,7 @@ impl Bus {
             }
         }
 
-        let unread = unread_dms(&self.db, auth.agent_id).await.unwrap_or(0);
+        let unread = unread_dms(&self.db, &auth).await.unwrap_or(0);
         let woke = !events.is_empty();
         Ok(Json(WaitResult {
             woke,

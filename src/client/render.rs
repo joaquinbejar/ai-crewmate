@@ -26,16 +26,27 @@ fn render_messages(value: &Value) {
         return;
     }
     for m in &messages {
+        // Sessions shown on both ends: the sender's is the address to reply to,
+        // and the recipient's says whether a message was for one window or for
+        // the person.
         let target = m["channel"]
             .as_str()
             .map(|c| format!("#{c}"))
-            .or_else(|| m["to"].as_str().map(|t| format!("@{t}")))
+            .or_else(|| {
+                m["to"].as_str().map(|t| match m["to_session"].as_str() {
+                    Some(s) => format!("@{t}/{s}"),
+                    None => format!("@{t}"),
+                })
+            })
             .unwrap_or_default();
+        let from = match m["from_session"].as_str() {
+            Some(s) => format!("{}/{s}", field(m, "from")),
+            None => field(m, "from").to_owned(),
+        };
         println!(
-            "[{}] {} {} → {}: {}",
+            "[{}] {} {from} → {}: {}",
             m["id"],
             field(m, "created_at"),
-            field(m, "from"),
             target,
             field(m, "body"),
         );

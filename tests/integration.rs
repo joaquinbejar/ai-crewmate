@@ -1116,14 +1116,17 @@ async fn ask_agent_returns_the_teammates_answer() {
     assert_eq!(resumed["answered"], true, "{resumed:?}");
     assert_eq!(resumed["answer"]["body"], "prod is still on pg15");
 
-    // Asking yourself is refused.
+    // Asking the window you are calling from is refused: nothing would ever
+    // read the question, so the call could only ever time out. Asking another
+    // of your own sessions is a different thing and is allowed — see
+    // one_session_can_ask_another_session_of_the_same_person.
     let err = call_expect_error(
         &joaquin,
         "ask_agent",
         json!({"to": "joaquin", "question": "hi"}),
     )
     .await;
-    assert!(err.contains("yourself"), "{err}");
+    assert!(err.contains("this session"), "{err}");
 
     let _ = joaquin.cancel().await;
     let _ = marta.cancel().await;
@@ -2888,6 +2891,199 @@ async fn a_lock_belongs_to_a_session_not_to_a_person() {
     assert_eq!(now_free["acquired"], true);
 
     for client in [market, core] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_direct_message_can_address_one_session_of_a_person() {
+    let h = require_db!("t_session_dms");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let dani = seed_agent(&h.pool, "layerv", "dani").await;
+
+    let general = connect_with_session(&h.base, &token, "general").await;
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let core = connect_with_session(&h.base, &token, "core-manager").await;
+    let dani_client = connect(&h.base, &dani).await;
+
+    // Addressed to one window of one person.
+    let sent = call(
+        &general,
+        "post_message",
+        json!({"to": "joaquin/market-data", "body": "rebase onto main first"}),
+    )
+    .await;
+    assert_eq!(sent["delivered_to"][0], "joaquin/market-data");
+    assert_eq!(sent["message"]["to_session"], "market-data");
+    assert_eq!(
+        sent["message"]["from_session"], "general",
+        "a reply needs to know which window asked"
+    );
+
+    let inbox = call(&market, "read_messages", json!({"scope": "inbox"})).await;
+    assert_eq!(inbox["messages"][0]["body"], "rebase onto main first");
+
+    // The sibling window is not the addressee and does not see it by default.
+    let other = call(&core, "read_messages", json!({"scope": "inbox"})).await;
+    assert_eq!(
+        other["messages"].as_array().unwrap().len(),
+        0,
+        "a sibling session must not receive another's mail: {other}"
+    );
+    // But a person can always read their own mail when they ask for it.
+    let everything = call(
+        &core,
+        "read_messages",
+        json!({"scope": "inbox", "all_sessions": true, "only_new": false}),
+    )
+    .await;
+    assert_eq!(everything["messages"][0]["body"], "rebase onto main first");
+
+    // Addressing the person still reaches every window, as it always has.
+    call(
+        &dani_client,
+        "post_message",
+        json!({"to": "joaquin", "body": "standup in 5"}),
+    )
+    .await;
+    for client in [&market, &core] {
+        let seen = call(client, "read_messages", json!({"scope": "inbox"})).await;
+        let bodies: Vec<&str> = seen["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["body"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            bodies.contains(&"standup in 5"),
+            "a message to the person reaches every session: {bodies:?}"
+        );
+    }
+
+    // Reading in one window must not mark another window's inbox read.
+    let again = call(&market, "read_messages", json!({"scope": "inbox"})).await;
+    assert_eq!(
+        again["messages"].as_array().unwrap().len(),
+        0,
+        "this window had already read everything addressed to it"
+    );
+
+    // Talking to the window you are in is refused with something to do instead.
+    let err = call_expect_error(
+        &market,
+        "post_message",
+        json!({"to": "joaquin/market-data", "body": "note to self"}),
+    )
+    .await;
+    assert!(err.contains("set_note"), "{err}");
+
+    for client in [general, market, core, dani_client] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_session_can_ask_another_session_of_the_same_person() {
+    let h = require_db!("t_session_ask");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+
+    let general = connect_with_session(&h.base, &token, "general").await;
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+
+    // The coordinating window asks the one that has the repository open, and
+    // blocks. The answer must come back here, not to some other window.
+    let asker = tokio::spawn(async move {
+        let answer = call(
+            &general,
+            "ask_agent",
+            json!({"to": "joaquin/market-data", "question": "is the suite green?",
+                   "timeout_seconds": 20}),
+        )
+        .await;
+        let _ = general.cancel().await;
+        answer
+    });
+
+    // The addressed window sees the question in its own inbox and replies.
+    let mut question_id = None;
+    for _ in 0..40 {
+        let inbox = call(&market, "read_messages", json!({"scope": "inbox"})).await;
+        if let Some(m) = inbox["messages"].as_array().and_then(|a| a.first()) {
+            assert_eq!(m["from_session"], "general");
+            assert_eq!(m["metadata"]["question"], true);
+            question_id = m["id"].as_i64();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let question_id = question_id.expect("the question reached the addressed session");
+
+    call(
+        &market,
+        "post_message",
+        json!({"to": "joaquin/general", "body": "green, 34 passing",
+               "reply_to": question_id}),
+    )
+    .await;
+
+    let answer = asker.await.unwrap();
+    assert_eq!(answer["answered"], true, "{answer}");
+    assert_eq!(answer["answer"]["body"], "green, 34 passing");
+    assert_eq!(answer["answer"]["from_session"], "market-data");
+
+    let _ = market.cancel().await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn wait_for_updates_does_not_wake_a_sibling_session() {
+    let h = require_db!("t_session_wait");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let dani = seed_agent(&h.pool, "layerv", "dani").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let core = connect_with_session(&h.base, &token, "core-manager").await;
+    let dani_client = connect(&h.base, &dani).await;
+
+    // core-manager blocks. A question for market-data must not wake it, or
+    // every window of a person wakes for work meant for one of them.
+    let waiter = tokio::spawn(async move {
+        let r = call(
+            &core,
+            "wait_for_updates",
+            json!({"timeout_seconds": 6, "kinds": ["message"]}),
+        )
+        .await;
+        let _ = core.cancel().await;
+        r
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    call(
+        &dani_client,
+        "post_message",
+        json!({"to": "joaquin/market-data", "body": "only for that window"}),
+    )
+    .await;
+
+    let woke = waiter.await.unwrap();
+    assert_eq!(
+        woke["timed_out"], true,
+        "a sibling session's mail must not wake this one: {woke}"
+    );
+
+    // The addressed window, however, has it waiting immediately.
+    let seen = call(
+        &market,
+        "wait_for_updates",
+        json!({"timeout_seconds": 5, "kinds": ["message"]}),
+    )
+    .await;
+    assert_eq!(seen["woke"], true, "{seen}");
+
+    for client in [market, dani_client] {
         let _ = client.cancel().await;
     }
     h.shutdown().await;

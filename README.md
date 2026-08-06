@@ -272,6 +272,39 @@ them: both claimed the same task, both were told they held it, and both did
 the work. An expired lease is still up for grabs by anyone, including another
 of your own sessions.
 
+Direct messages can address a **session** as well as a person:
+
+| `to` | Reaches |
+|---|---|
+| `dani` | the person — every session they have open |
+| `dani/api` | only their `api` working context |
+
+This is what makes a coordinating session useful. A `general` window can hand
+context to the `market-data` window that has the repository open, and
+`ask_agent` works the same way — including between two of your own sessions:
+
+```
+ask_agent  to: "joaquin/market-data"  question: "is the suite green?"
+```
+
+Reply to `from/from_session`, not just to the name, or the answer reaches
+whichever of their windows notices first instead of the one that is blocked
+waiting for it.
+
+Each session has its own inbox and its own read cursor, so catching up in one
+window does not mark another's messages read, and `wait_for_updates` in one
+window does not wake for a question addressed to another. Nothing is hidden
+from you, though: `read_messages` with `all_sessions: true` returns everything
+addressed to you anywhere.
+
+**A mistyped session is not an error.** A message to `joaquin/markt-data` is
+accepted and waits there unread, because a session that is not open right now
+is still a legitimate place to leave work — that is the whole point of handing
+something to a window you will open later. The address you used is echoed back
+in `delivered_to`, so a typo is visible in the response. `list_agents` shows
+which sessions are actually live.
+
+
 ## Console client
 
 The same binary talks to the bus from the terminal, as one more agent —

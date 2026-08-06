@@ -99,9 +99,11 @@ pub(super) fn to_call(cmd: &ClientCmd) -> anyhow::Result<Option<(&'static str, V
             scope,
             history,
             limit,
+            all_sessions,
         } => (
             "read_messages",
-            json!({"scope": scope, "only_new": !history, "limit": limit}),
+            json!({"scope": scope, "only_new": !history, "limit": limit,
+                   "all_sessions": all_sessions}),
         ),
         ClientCmd::Search { query, limit } => {
             ("search_messages", json!({"query": query, "limit": limit}))
@@ -240,6 +242,7 @@ mod tests {
                 scope: "all".into(),
                 history: false,
                 limit: 50,
+                all_sessions: false,
             },
             ClientCmd::Search {
                 query: "x".into(),
@@ -318,6 +321,7 @@ mod tests {
             scope: "inbox".into(),
             history: true,
             limit: 10,
+            all_sessions: false,
         });
         assert_eq!(
             args["only_new"], false,

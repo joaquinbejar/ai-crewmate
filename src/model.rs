@@ -110,10 +110,18 @@ pub struct ChannelList {
 pub struct MessageInfo {
     pub id: i64,
     pub from: String,
+    /// Which of the sender's working contexts wrote this; `null` is their
+    /// shared session. Reply to `from/from_session` to reach the window that
+    /// is waiting, rather than whichever one notices first.
+    pub from_session: Option<String>,
     /// Channel name for channel messages; `null` for direct messages.
     pub channel: Option<String>,
     /// Recipient handle for direct messages; `null` for channel messages.
     pub to: Option<String>,
+    /// Set when this direct message was addressed to one working context of
+    /// the recipient rather than to the person. `null` means every session of
+    /// theirs sees it.
+    pub to_session: Option<String>,
     pub body: String,
     pub reply_to: Option<i64>,
     #[schemars(schema_with = "any_json_schema")]

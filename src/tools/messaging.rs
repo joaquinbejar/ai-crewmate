@@ -41,7 +41,11 @@ pub struct PostMessageArgs {
     /// Channel to broadcast to. Mutually exclusive with `to`.
     #[serde(default)]
     pub channel: Option<String>,
-    /// Agent handle to send a direct message to. Mutually exclusive with `channel`.
+    /// Who to send a direct message to. Mutually exclusive with `channel`.
+    /// `"dani"` reaches every session that teammate has open; `"dani/api"`
+    /// reaches only their `api` working context. Addressing one of your own
+    /// sessions is allowed and is how a coordinating window hands work to the
+    /// one that has the repository open.
     #[serde(default)]
     pub to: Option<String>,
     /// The message text. Keep it short and factual; teammates' agents read
@@ -83,11 +87,18 @@ pub struct ReadMessagesArgs {
     /// Maximum messages to return (1-200).
     #[serde(default = "default_limit")]
     pub limit: i64,
+    /// Also return direct messages addressed to your *other* sessions. Off by
+    /// default so each working context sees its own; turn it on to catch up on
+    /// everything addressed to you anywhere.
+    #[serde(default)]
+    pub all_sessions: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AskAgentArgs {
-    /// Agent handle to ask. Use list_agents to see who is around.
+    /// Who to ask: an agent handle, or `agent/session` for one of their
+    /// working contexts. Use list_agents to see who is around and which
+    /// sessions they have open.
     pub to: String,
     /// The question, sent as a direct message. Omit when resuming with
     /// `resume_message_id`.
@@ -190,6 +201,7 @@ impl Bus {
             scope: args.scope,
             only_new: args.only_new,
             limit: args.limit,
+            all_sessions: args.all_sessions,
         };
         Ok(Json(
             messaging::read_messages(&self.db, &auth, input).await?,
@@ -217,10 +229,15 @@ impl Bus {
             .unwrap_or(ASK_DEFAULT_TIMEOUT_SECS)
             .clamp(5, ASK_MAX_TIMEOUT_SECS);
 
-        let target_id = agent_id_by_name(&self.db, auth.team_id, &to).await?;
-        if target_id == auth.agent_id {
+        let (target_name, target_session) = messaging::parse_address(&to)?;
+        let target_id = agent_id_by_name(&self.db, auth.team_id, &target_name).await?;
+        // Asking another of your own sessions is the point of session
+        // addressing — a coordinating window handing work to the one with the
+        // repository open. Only asking *this* window is impossible: nothing
+        // would ever read the question, and the call would block until timeout.
+        if target_id == auth.agent_id && target_session.as_deref().unwrap_or("") == auth.session {
             return Err(crate::error::BusError::invalid(
-                "you cannot ask yourself; call list_agents and pick a teammate",
+                "that address is this session, so nothing would ever read the question.                  Ask a teammate, or another of your own sessions as 'you/<session>' —                  list_agents shows which are open.",
             )
             .into());
         }
@@ -287,9 +304,16 @@ impl Bus {
                     _ = tokio::time::sleep_until(deadline) => break false,
                     recv = rx.recv() => match recv {
                         Ok(ev) => {
+                            // Later than the question, so asking another of your
+                            // own sessions does not wake on your own question.
+                            // Addressed here or to the person, so a message to a
+                            // sibling window does not either.
+                            let for_us = ev.recipient_session().is_none_or(|s| s == auth.session);
                             if ev.kind() == "message"
                                 && ev.sender_agent_id() == Some(target_id)
                                 && ev.recipient_agent_id() == Some(auth.agent_id)
+                                && ev.message_id().is_some_and(|id| id > question_id)
+                                && for_us
                             {
                                 break true;
                             }
