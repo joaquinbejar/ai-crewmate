@@ -20,7 +20,7 @@ teammate's) connects with its own token and can:
 | **Agent↔agent RPC**: ask a teammate and wait for their answer in one call | `ask_agent` |
 | **Attachments**: diffs, logs, small files (≤256 KiB) on messages and tasks | `attach_file`, `get_attachment` (+ `attachments` in `post_message`) |
 | **Generic locks** with TTL over resources ("deploy:staging") | `acquire_lock`, `release_lock`, `list_locks` |
-| Presence (who is on which repo/branch doing what), one entry per open session | `heartbeat`, `list_agents` |
+| Presence (who is on which repo/branch doing what), with each teammate's open sessions under their name | `heartbeat`, `list_agents` |
 | Shared team memory (notes with history) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
 | **Activity digest** of the last N hours | `team_digest` |
 | Identity | `whoami` |

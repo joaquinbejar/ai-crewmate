@@ -158,20 +158,11 @@ pub async fn list_agents(pool: &PgPool, auth: &AuthCtx, online_only: bool) -> Bu
                p.updated_at,
                COALESCE(p.expires_at > now(), false) AS online
         FROM agents a
-        -- One presence row per agent, not one per session. An agent can now
-        -- have several, and joining on agent_id alone would emit a duplicate
-        -- entry per session and inflate online_count with them. Reporting the
-        -- sessions properly, grouped under their agent, is the next change in
-        -- the stack; until then this picks the one that matters — live first,
-        -- then most recent — so the output stays exactly the shape every
-        -- existing client parses.
-        LEFT JOIN LATERAL (
-            SELECT pp.status, pp.repo, pp.branch, pp.activity, pp.updated_at, pp.expires_at
-            FROM agent_presence pp
-            WHERE pp.agent_id = a.id
-            ORDER BY (pp.expires_at > now()) DESC, pp.updated_at DESC
-            LIMIT 1
-        ) p ON true
+        -- Every session, deliberately: the previous change picked a single
+        -- presence row per agent so the flat output stayed correct while it
+        -- was the only thing available. Now the rows are folded back under
+        -- their agent in Rust, so all of them are wanted here.
+        LEFT JOIN agent_presence p ON p.agent_id = a.id
         WHERE a.team_id = $1
           AND a.disabled_at IS NULL
           AND (NOT $2::bool OR COALESCE(p.expires_at > now(), false))

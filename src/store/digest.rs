@@ -168,9 +168,19 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
         bool,
     )> = sqlx::query_as(
         r#"
+            -- One row per person, not per session. Presence is keyed by
+            -- (agent_id, session), so joining on the agent alone listed
+            -- someone working in three repositories three times under the
+            -- same name — a catch-up that reads as three teammates.
             SELECT a.name, p.activity, p.updated_at, COALESCE(p.expires_at > now(), false)
             FROM agents a
-            LEFT JOIN agent_presence p ON p.agent_id = a.id
+            LEFT JOIN LATERAL (
+                SELECT pp.activity, pp.updated_at, pp.expires_at
+                FROM agent_presence pp
+                WHERE pp.agent_id = a.id
+                ORDER BY (pp.expires_at > now()) DESC, pp.updated_at DESC
+                LIMIT 1
+            ) p ON true
             WHERE a.team_id = $1 AND a.disabled_at IS NULL
             ORDER BY p.updated_at DESC NULLS LAST
             "#,

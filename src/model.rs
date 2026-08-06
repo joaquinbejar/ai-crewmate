@@ -47,8 +47,10 @@ pub struct AgentInfo {
     pub name: String,
     pub display_name: Option<String>,
     /// Which working context the fields below describe — usually a repository
-    /// name. `null` is the shared session, used by clients that send no
-    /// `X-Crew-Session` header.
+    /// name. Absent for the shared session, used by clients that send no
+    /// `X-Crew-Session` header, so a roster of teammates who use no sessions
+    /// serialises exactly as it did before sessions existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session: Option<String>,
     /// One of `active`, `idle`, `offline`. `offline` means the presence lease
     /// expired, i.e. the agent has not sent a heartbeat recently.
@@ -71,7 +73,8 @@ pub struct AgentInfo {
 /// One working context of an agent: what that session is doing right now.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AgentSession {
-    /// `null` is the shared session.
+    /// Absent for the shared session.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session: Option<String>,
     pub status: String,
     pub repo: Option<String>,

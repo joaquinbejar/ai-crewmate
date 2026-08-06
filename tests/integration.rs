@@ -2710,19 +2710,32 @@ async fn presence_is_tracked_per_session_not_per_person() {
     );
 
     // An agent with a single shared session keeps the flat shape it had before
-    // sessions existed — no session level appears at all.
+    // sessions existed. Asserted on the JSON keys rather than on values,
+    // because `value["absent"]` and `value["x"] == null` read the same from a
+    // test and very differently from a client.
     let dani_row = seen["agents"]
         .as_array()
         .unwrap()
         .iter()
         .find(|a| a["name"] == "dani")
         .unwrap();
+    let keys: Vec<&String> = dani_row.as_object().unwrap().keys().collect();
     assert!(
-        dani_row.get("sessions").is_none(),
-        "a single session must not grow a nested list: {dani_row}"
+        !keys.iter().any(|k| *k == "session" || *k == "sessions"),
+        "the shared session must add no key at all, before or after: {keys:?}"
     );
-    assert_eq!(dani_row["session"], Value::Null);
     assert_eq!(dani_row["repo"], "Layer-V/core-manager");
+
+    // The digest reads presence too, and it is keyed per session now: a person
+    // in two repositories must still appear once in the catch-up.
+    let digest = call(&market, "team_digest", json!({"hours": 1})).await;
+    let joaquins = digest["agents_seen"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["name"] == "joaquin")
+        .count();
+    assert_eq!(joaquins, 1, "one line per teammate in a catch-up: {digest}");
 
     // One session going stale leaves the others alone.
     sqlx::query(
