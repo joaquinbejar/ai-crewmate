@@ -68,9 +68,16 @@ pub fn check_text(field: &str, value: &str, max: usize) -> BusResult<String> {
 
 /// The caller's session as the API reports it: `None` for the shared session.
 ///
-/// Storage and presentation differ on purpose. A primary key cannot hold
-/// NULL, so the shared session is `''` in every table; a caller reading
-/// `"session": ""` would reasonably wonder what an empty session is.
+/// Storage and presentation differ on purpose. `agent_presence` carries the
+/// session in its primary key, which cannot hold NULL, so the shared session
+/// is `''` there; a caller reading `"session": ""` would reasonably wonder
+/// what an empty session is.
+///
+/// The other session columns are nullable and NULL means something different
+/// in each: on `tasks.claimed_session` and `locks.holder_session` it is a
+/// claim taken before sessions existed, treated as the shared one; on
+/// `messages.recipient_session` it means *every* session of the recipient.
+/// Read them with that in mind rather than assuming `''`.
 pub fn session_label(auth: &AuthCtx) -> Option<String> {
     (!auth.session.is_empty()).then(|| auth.session.clone())
 }

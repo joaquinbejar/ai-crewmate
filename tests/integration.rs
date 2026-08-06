@@ -2575,6 +2575,22 @@ async fn one_token_carries_several_sessions_without_splitting_identity() {
         "market-data"
     );
 
+    // Presence is per session now, so list_agents must still report one entry
+    // per *person* rather than one per session. Grouping the sessions under
+    // their agent is the next change in the stack; until it lands, duplicate
+    // rows would read as duplicate teammates.
+    call(&market, "heartbeat", json!({"repo": "Layer-V/market-data"})).await;
+    call(&core, "heartbeat", json!({"repo": "Layer-V/core-manager"})).await;
+    let seen = call(&market, "list_agents", json!({})).await;
+    let mine = seen["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["name"] == "joaquin")
+        .count();
+    assert_eq!(mine, 1, "one entry per teammate: {seen}");
+    assert_eq!(seen["online_count"], 1, "two sessions is still one person");
+
     for client in [market, core, shared, same] {
         let _ = client.cancel().await;
     }
