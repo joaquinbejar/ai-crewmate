@@ -17,6 +17,7 @@ This machine is connected to a shared coordination bus (MCP server `ai-crew-sync
 - Post meaningful progress and decisions to the relevant channel with `post_message` — not every step, just what a teammate would need to know.
 - Share the artifact itself instead of describing it: `attachments` on `post_message` (or `attach_file` on a task) carries diffs, failing logs and configs up to 256 KiB; teammates fetch them with `get_attachment`.
 - Renew your claim with `renew_task_lease` on long tasks; an expired lease means others may take the task over. `heartbeat` only publishes presence — it never touches task ownership or lease expiry.
+- A claim and a lock belong to the *session* that took them, not to the person. If a refusal says the holder is your own other session, that work is already under way in another window: continue it there, or wait for the lease to expire — do not start it again here.
 - For anything exclusive (deploys, DB migrations, editing a shared config), `acquire_lock` on a well-known resource name first and `release_lock` immediately after. If the lock is held, wait or coordinate — never bypass it.
 - Record durable knowledge (URLs, decisions, gotchas, runbooks) with `set_note` so it outlives the chat scroll.
 

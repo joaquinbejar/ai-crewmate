@@ -178,10 +178,17 @@ pub struct TaskInfo {
     /// cannot be claimed.
     pub blocked: bool,
     pub claimed_by: Option<String>,
+    /// Which of `claimed_by`'s working contexts holds the claim; `null` is
+    /// their shared session. A claim belongs to a session, not to a person —
+    /// your own other session cannot renew, release or steal this one.
+    pub claimed_session: Option<String>,
     pub claimed_at: Option<String>,
     /// When the current claim expires. After this instant another agent may
     /// steal the task, so renew the lease if you are still working on it.
     pub lease_expires_at: Option<String>,
+    /// Seconds left on the claim, so you can decide whether waiting is
+    /// reasonable without doing the arithmetic. Zero means it has lapsed.
+    pub lease_seconds_remaining: Option<i64>,
     /// True when the claim has already lapsed.
     pub lease_expired: bool,
     pub result: Option<String>,
@@ -260,6 +267,10 @@ pub struct Ack {
 pub struct LockInfo {
     pub name: String,
     pub holder: String,
+    /// Which of the holder's working contexts took it; `null` is their shared
+    /// session. A lock belongs to a session — your own other session cannot
+    /// release it or take it over while it is live.
+    pub holder_session: Option<String>,
     pub purpose: Option<String>,
     pub acquired_at: String,
     /// When the lock lapses on its own if not renewed.

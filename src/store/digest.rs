@@ -206,11 +206,13 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
         String,
         String,
         Option<String>,
+        Option<String>,
         chrono::DateTime<chrono::Utc>,
         chrono::DateTime<chrono::Utc>,
     )> = sqlx::query_as(
         r#"
-            SELECT l.name, a.name, l.purpose, l.acquired_at, l.expires_at
+            SELECT l.name, a.name, l.holder_session, l.purpose,
+                   l.acquired_at, l.expires_at
             FROM locks l JOIN agents a ON a.id = l.holder_agent_id
             WHERE l.team_id = $1 AND l.expires_at > now()
             ORDER BY l.name
@@ -223,9 +225,10 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
     let active_locks = lock_rows
         .into_iter()
         .map(
-            |(name, holder, purpose, acquired_at, expires_at)| LockInfo {
+            |(name, holder, holder_session, purpose, acquired_at, expires_at)| LockInfo {
                 name,
                 holder,
+                holder_session: holder_session.filter(|s: &String| !s.is_empty()),
                 purpose,
                 acquired_at: ts(acquired_at),
                 expires_at: ts(expires_at),

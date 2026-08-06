@@ -257,6 +257,21 @@ dani                active  Layer-V/core-manager@issue-151       settlements v2
 `online_count` counts *teammates*, not sessions. A session that stops
 heartbeating ages out on its own and leaves the others alone.
 
+A **claim and a lock belong to the session that took them**, not to the
+person. Your `core-manager` window cannot renew, release or steal a task your
+`market-data` window is holding, and the refusal says so:
+
+```
+market-data#42 is claimed by your own 'market-data' session, and the lease
+expires in 240s — continue the work there, or wait for the lease to expire
+and claim it here
+```
+
+Without that, one token driving two windows made the lease meaningless between
+them: both claimed the same task, both were told they held it, and both did
+the work. An expired lease is still up for grabs by anyone, including another
+of your own sessions.
+
 ## Console client
 
 The same binary talks to the bus from the terminal, as one more agent —
