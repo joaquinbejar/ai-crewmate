@@ -7,6 +7,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use super::{Bus, auth_of};
 use crate::{
@@ -28,6 +29,12 @@ pub struct WaitArgs {
     /// "note". Omit to wake on anything relevant to you.
     #[serde(default)]
     pub kinds: Option<Vec<String>>,
+    /// Wake on channel messages from every channel, not only the one this
+    /// session works in. Ignored when your session has no matching channel,
+    /// where every channel already wakes you. Direct messages, tasks, locks
+    /// and notes always wake you either way.
+    #[serde(default)]
+    pub all_channels: bool,
 }
 
 async fn unread_dms(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Error> {
@@ -54,7 +61,11 @@ async fn unread_dms(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Error> {
     .await
 }
 
-async fn unread_anything(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Error> {
+async fn unread_anything(
+    pool: &PgPool,
+    auth: &AuthCtx,
+    focus: Option<Uuid>,
+) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         r#"
         SELECT count(*)
@@ -63,7 +74,8 @@ async fn unread_anything(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Err
         WHERE m.team_id = $2
           AND m.id > COALESCE(c.last_message_id, 0)
           AND m.sender_agent_id <> $1
-          AND (m.channel_id IS NOT NULL
+          AND ((m.channel_id IS NOT NULL
+                AND ($5::uuid IS NULL OR m.channel_id = $5))
                OR (m.recipient_agent_id = $1
                    AND (m.recipient_session IS NULL OR m.recipient_session = $3)))
         "#,
@@ -72,8 +84,21 @@ async fn unread_anything(pool: &PgPool, auth: &AuthCtx) -> Result<i64, sqlx::Err
     .bind(auth.team_id)
     .bind(&auth.session)
     .bind(crate::store::messaging::cursor_scope("all", &auth.session))
+    .bind(focus)
     .fetch_one(pool)
     .await
+}
+
+/// Is this event inside the session's channel focus?
+///
+/// Only channel messages are filtered: a direct message, a task, a lock or a
+/// note is not tied to a channel, and silencing those would hide work rather
+/// than noise.
+fn in_focus(event: &BusEvent, focus: Option<Uuid>) -> bool {
+    match (focus, event.channel_id()) {
+        (Some(channel), Some(posted_in)) => channel == posted_in,
+        _ => true,
+    }
 }
 
 /// Turn a raw bus event into a one-line summary, resolving ids to names.
@@ -203,11 +228,24 @@ impl Bus {
                 .unwrap_or(true)
         };
 
+        // The channel this session works in, when it has one and the caller
+        // has not asked for the whole team. A window working on market-data
+        // should not be woken by core-manager chatter — that is half the point
+        // of naming a session after a repository.
+        let focus = match args.all_channels {
+            true => None,
+            false => crate::store::messaging::default_channel(&self.db, &auth)
+                .await?
+                .map(|(id, _)| id),
+        };
+
         // Subscribe before checking the database so nothing slips between the
         // check and the wait.
         let mut rx = self.hub.subscribe();
 
-        let pending = unread_anything(&self.db, &auth).await.map_err(|e| {
+        // Same rule as the wake filter below: reporting a backlog the wait
+        // would not have woken for is a lie the caller cannot act on.
+        let pending = unread_anything(&self.db, &auth, focus).await.map_err(|e| {
             tracing::error!(error = %e, "unread check failed");
             ErrorData::internal_error("database error", None)
         })?;
@@ -246,7 +284,9 @@ impl Bus {
                 },
             };
 
-            if !event.visible_to(auth.team_id, auth.agent_id, &auth.session) || !wants(event.kind())
+            if !event.visible_to(auth.team_id, auth.agent_id, &auth.session)
+                || !wants(event.kind())
+                || !in_focus(&event, focus)
             {
                 continue;
             }
@@ -260,6 +300,7 @@ impl Bus {
                 let grace = tokio::time::Instant::now() + Duration::from_millis(150);
                 while let Ok(Ok(more)) = tokio::time::timeout_at(grace, rx.recv()).await {
                     if more.visible_to(auth.team_id, auth.agent_id, &auth.session)
+                        && in_focus(&more, focus)
                         && wants(more.kind())
                         && !(more.kind() == "message"
                             && more.sender_agent_id() == Some(auth.agent_id))

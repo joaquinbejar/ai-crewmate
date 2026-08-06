@@ -188,6 +188,28 @@ pub fn parse_address(raw: &str) -> BusResult<(String, Option<String>)> {
     }
 }
 
+/// The channel a session works in: the one named after it, if the team has
+/// one.
+///
+/// Resolved by name every time rather than stored. A binding table would be
+/// one more thing to keep in sync and to migrate, and it would go stale the
+/// moment a channel is renamed; a lookup cannot. A team that does not name
+/// channels after repositories simply gets no default and passes `channel`
+/// exactly as it does today.
+pub async fn default_channel(pool: &PgPool, auth: &AuthCtx) -> BusResult<Option<(Uuid, String)>> {
+    if auth.session.is_empty() {
+        return Ok(None);
+    }
+    let name = normalize_channel(&auth.session);
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM channels WHERE team_id = $1 AND name = $2")
+            .bind(auth.team_id)
+            .bind(&name)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|r| (r.0, name)))
+}
+
 /// Read-cursor key for a scope, kept apart per session and per view.
 ///
 /// Two windows of one person track their own reading position; sharing the
@@ -258,11 +280,37 @@ pub async fn post_message(
                 "set either `channel` or `to`, not both: a message is either broadcast or direct",
             ));
         }
-        (None, None) => {
-            return Err(BusError::invalid(
-                "set `channel` to broadcast, or `to` to send a direct message",
-            ));
-        }
+        (None, None) => match default_channel(pool, auth).await? {
+            // The session works in a repository and the team has a channel for
+            // it: naming it on every call is friction with one right answer.
+            Some((id, _name)) => {
+                let names: Vec<(String,)> = sqlx::query_as(
+                    "SELECT name FROM agents WHERE team_id = $1 AND disabled_at IS NULL ORDER BY name",
+                )
+                .bind(auth.team_id)
+                .fetch_all(pool)
+                .await?;
+                (
+                    Some(id),
+                    None,
+                    None,
+                    names.into_iter().map(|r| r.0).collect::<Vec<_>>(),
+                )
+            }
+            None if auth.session.is_empty() => {
+                return Err(BusError::invalid(
+                    "set `channel` to broadcast, or `to` to send a direct message",
+                ));
+            }
+            None => {
+                return Err(BusError::invalid(format!(
+                    "set `channel` to broadcast, or `to` to send a direct message. \
+                     This session is '{}', and there is no channel of that name to \
+                     fall back on — create_channel '{}' to make it the default here.",
+                    auth.session, auth.session
+                )));
+            }
+        },
         (Some(channel), None) => {
             let id = channel_id_by_name(pool, auth.team_id, channel).await?;
             // Everyone in the team can read a channel, so report the roster.

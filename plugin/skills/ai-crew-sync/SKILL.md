@@ -35,4 +35,4 @@ This machine is connected to a shared coordination bus (MCP server `ai-crew-sync
 - Release any locks you still hold.
 
 ## Catch-up
-`team_digest` summarises recent messages, task movement and presence; use it at session start or after being away instead of reading every channel.
+`team_digest` summarises recent messages, task movement and presence; use it at session start or after being away instead of reading every channel. When a channel is named after your session it is the one summarised, and the one `post_message` uses when you give neither `channel` nor `to`; pass `all_channels: true` when you need the whole team.

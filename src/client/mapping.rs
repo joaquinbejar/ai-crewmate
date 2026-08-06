@@ -132,14 +132,22 @@ pub(super) fn to_call(cmd: &ClientCmd) -> anyhow::Result<Option<(&'static str, V
         ClientCmd::Wait {
             timeout_seconds,
             kinds,
+            all_channels,
         } => (
             "wait_for_updates",
             json!({
                 "timeout_seconds": timeout_seconds,
-                "kinds": if kinds.is_empty() { Value::Null } else { json!(kinds) }
+                "kinds": if kinds.is_empty() { Value::Null } else { json!(kinds) },
+                "all_channels": all_channels
             }),
         ),
-        ClientCmd::Digest { hours } => ("team_digest", json!({"hours": hours})),
+        ClientCmd::Digest {
+            hours,
+            all_channels,
+        } => (
+            "team_digest",
+            json!({"hours": hours, "all_channels": all_channels}),
+        ),
         ClientCmd::Lock(lock) => match lock {
             LockCmd::Acquire {
                 name,
@@ -277,9 +285,13 @@ mod tests {
             ClientCmd::Wait {
                 timeout_seconds: None,
                 kinds: vec![],
+                all_channels: false,
             },
             ClientCmd::Lock(LockCmd::List),
-            ClientCmd::Digest { hours: 24 },
+            ClientCmd::Digest {
+                hours: 24,
+                all_channels: false,
+            },
             ClientCmd::Download { id: 1, out: None },
         ];
         for cmd in cases {
@@ -347,6 +359,7 @@ mod tests {
         let (_, args) = mapped(ClientCmd::Wait {
             timeout_seconds: Some(30),
             kinds: vec![],
+            all_channels: false,
         });
         assert_eq!(args["timeout_seconds"], 30);
         assert!(
@@ -357,6 +370,7 @@ mod tests {
         let (_, args) = mapped(ClientCmd::Wait {
             timeout_seconds: None,
             kinds: vec!["message".into()],
+            all_channels: false,
         });
         assert_eq!(args["kinds"][0], "message");
     }

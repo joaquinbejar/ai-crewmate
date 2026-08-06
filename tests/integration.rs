@@ -3162,3 +3162,112 @@ async fn wait_for_updates_does_not_wake_a_sibling_session() {
     }
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_session_posts_to_and_watches_the_channel_named_after_it() {
+    let h = require_db!("t_session_channel");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let dani = seed_agent(&h.pool, "layerv", "dani").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let dani_client = connect(&h.base, &dani).await;
+
+    // No channel of that name yet: the error says what to do about it.
+    let err = call_expect_error(&market, "post_message", json!({"body": "hello"})).await;
+    assert!(
+        err.contains("market-data") && err.contains("create_channel"),
+        "the refusal must name the session and the fix: {err}"
+    );
+
+    call(&market, "create_channel", json!({"name": "market-data"})).await;
+    call(&market, "create_channel", json!({"name": "core-manager"})).await;
+
+    // Now the session has somewhere obvious to post.
+    let me = call(&market, "whoami", json!({})).await;
+    assert_eq!(me["default_channel"], "market-data");
+
+    let posted = call(&market, "post_message", json!({"body": "feed is wired"})).await;
+    assert_eq!(posted["message"]["channel"], "market-data");
+
+    // An explicit channel always wins.
+    let elsewhere = call(
+        &market,
+        "post_message",
+        json!({"channel": "core-manager", "body": "fyi"}),
+    )
+    .await;
+    assert_eq!(elsewhere["message"]["channel"], "core-manager");
+    // And any channel of the team stays readable.
+    let read = call(
+        &market,
+        "read_messages",
+        json!({"scope": "core-manager", "only_new": false}),
+    )
+    .await;
+    assert_eq!(read["messages"][0]["body"], "fyi");
+
+    // The shared session keeps the old contract exactly: no default, and the
+    // original error text.
+    let shared = connect(&h.base, &token).await;
+    let shared_me = call(&shared, "whoami", json!({})).await;
+    assert_eq!(shared_me["default_channel"], Value::Null);
+    let err = call_expect_error(&shared, "post_message", json!({"body": "hello"})).await;
+    assert!(err.contains("set `channel`"), "{err}");
+
+    // The digest follows the same focus: this window's repository by default,
+    // the whole team on request.
+    let focused = call(&market, "team_digest", json!({"hours": 1})).await;
+    let names: Vec<&str> = focused["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(names, ["market-data"], "the session's own channel only");
+    let wide = call(
+        &market,
+        "team_digest",
+        json!({"hours": 1, "all_channels": true}),
+    )
+    .await;
+    assert_eq!(wide["channels"].as_array().unwrap().len(), 2);
+
+    // Noise from another repository must not wake this window.
+    let waiter = tokio::spawn(async move {
+        let r = call(
+            &market,
+            "wait_for_updates",
+            json!({"timeout_seconds": 6, "kinds": ["message"]}),
+        )
+        .await;
+        let _ = market.cancel().await;
+        r
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    call(
+        &dani_client,
+        "post_message",
+        json!({"channel": "core-manager", "body": "unrelated work"}),
+    )
+    .await;
+    let woke = waiter.await.unwrap();
+    assert_eq!(
+        woke["timed_out"], true,
+        "another repository's channel must not wake this session: {woke}"
+    );
+
+    // ...but the digest can still be asked for the whole team.
+    let focused = call(&shared, "team_digest", json!({"hours": 1})).await;
+    let names: Vec<&str> = focused["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap_or_default())
+        .collect();
+    assert!(names.contains(&"core-manager"), "{names:?}");
+
+    for client in [shared, dani_client] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}

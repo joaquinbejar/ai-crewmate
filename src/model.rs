@@ -34,6 +34,11 @@ pub struct WhoAmI {
     /// `null` means the shared session: you sent no header, and your presence,
     /// task claims and locks are not separated from your other sessions.
     pub session: Option<String>,
+    /// Channel this session posts to when `post_message` is called with
+    /// neither `channel` nor `to` — the one named after your session, if the
+    /// team has one. `null` means there is none, so you must always say where
+    /// a message goes.
+    pub default_channel: Option<String>,
     /// Number of unread direct messages waiting for you.
     pub unread_direct_messages: i64,
     /// Tasks currently claimed by you and not yet completed.

@@ -305,6 +305,26 @@ pasarle algo a una ventana que abrirás luego. La dirección usada vuelve en
 `delivered_to`, así que la errata se ve en la respuesta. `list_agents` enseña
 qué sesiones están vivas de verdad.
 
+### El canal de la sesión
+
+Llama a un canal como una sesión y pasa a ser su canal por defecto: sin
+`channel` ni `to`, `post_message` va ahí, `team_digest` lo resume, y
+`wait_for_updates` deja de despertarse con el ruido de los canales de otros
+repos. Los DM, tareas, locks y notas te despiertan siempre — silenciarlos
+escondería trabajo, no ruido. `all_channels: true` vuelve a abarcar todo el
+equipo en cualquiera de las dos llamadas, y un `channel` explícito siempre
+manda.
+
+Se resuelve por nombre cada vez: no hay binding que configurar ni nada que
+mantener sincronizado. Un equipo que no llame a sus canales como sus repos
+simplemente no tiene default y sigue diciendo dónde va cada mensaje, igual que
+hoy — `whoami` informa del canal resuelto, o `null` si no hay.
+
+`read_messages` mantiene a propósito `"all"` como scope por defecto. Reducirlo
+a un canal dejaría fuera tus mensajes directos de la lectura por defecto, que
+es justo por donde llegan las preguntas.
+
+
 
 ## Cliente de consola
 
