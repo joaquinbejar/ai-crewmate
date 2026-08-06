@@ -553,7 +553,8 @@ pub async fn read_messages(
     // Reading across sessions is a different view of a different set of
     // messages, so it keeps its own cursor rather than moving this session's.
     let cursor_key = scope.cursor_key_for(auth, input.all_sessions);
-    // `false` widens the DM filter to every session of this agent.
+    // True widens the DM filter to every session of this agent; false keeps it
+    // to what is addressed to this one, or to the person.
     let session_filter = input.all_sessions;
 
     let since: i64 = if input.only_new {
