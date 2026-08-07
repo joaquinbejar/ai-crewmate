@@ -56,6 +56,11 @@ impl BusEvent {
         self.0.get("recipient_session").and_then(|v| v.as_str())
     }
 
+    /// Working context the message was sent from, if any.
+    pub fn sender_session(&self) -> Option<&str> {
+        self.0.get("sender_session").and_then(|v| v.as_str())
+    }
+
     /// Was this posted as an announcement — something the sender judged worth
     /// interrupting the whole team for?
     pub fn is_announcement(&self) -> bool {

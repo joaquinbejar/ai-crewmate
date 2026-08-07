@@ -3387,3 +3387,75 @@ async fn an_announcement_reaches_a_session_focused_elsewhere() {
     }
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn your_own_general_session_can_announce_to_your_other_windows() {
+    let h = require_db!("t_announce_self");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+
+    let general = connect_with_session(&h.base, &token, "general").await;
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    call(&general, "create_channel", json!({"name": "general"})).await;
+    call(&general, "create_channel", json!({"name": "market-data"})).await;
+
+    // Live wake: the coordinating window announces, the repository window is
+    // blocked. Same token, so an agent-level "your own messages" guard would
+    // discard it and this would time out.
+    let waiting = tokio::spawn({
+        let market = connect_with_session(&h.base, &token, "market-data").await;
+        async move {
+            let r = call(
+                &market,
+                "wait_for_updates",
+                json!({"timeout_seconds": 10, "kinds": ["message"]}),
+            )
+            .await;
+            let _ = market.cancel().await;
+            r
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    call(
+        &general,
+        "post_message",
+        json!({"channel": "general", "announce": true,
+               "body": "0.6.0 goes out in 10, freeze your branches"}),
+    )
+    .await;
+    let woke = waiting.await.unwrap();
+    assert_eq!(
+        woke["woke"], true,
+        "your own general window must be able to reach your other windows: {woke}"
+    );
+
+    // Pre-check: the same must be true of the backlog path, which answers
+    // before subscribing. Reporting nothing pending here would make the wait
+    // look like a hang.
+    let pending = call(
+        &market,
+        "wait_for_updates",
+        json!({"timeout_seconds": 5, "kinds": ["message"]}),
+    )
+    .await;
+    assert_eq!(
+        pending["woke"], true,
+        "the announcement is already waiting for this window: {pending}"
+    );
+
+    // The window that sent it is still not woken by its own announcement.
+    let quiet = call(
+        &general,
+        "wait_for_updates",
+        json!({"timeout_seconds": 5, "kinds": ["message"]}),
+    )
+    .await;
+    assert_eq!(
+        quiet["timed_out"], true,
+        "the sending window must not wake on its own message: {quiet}"
+    );
+
+    for client in [general, market] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}

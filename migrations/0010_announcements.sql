@@ -39,6 +39,11 @@ BEGIN
         -- a person has always meant.
         'recipient_session', NEW.recipient_session,
         'sender_agent_id', NEW.sender_agent_id,
+        -- The sending *session*, not just the sending agent: "your own
+        -- messages are not news to you" has to mean this window, or an
+        -- announcement from your general window never reaches the repository
+        -- windows it was written for.
+        'sender_session', NEW.sender_session,
         'announce', NEW.announce
     )::text);
     RETURN NULL;

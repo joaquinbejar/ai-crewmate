@@ -73,7 +73,9 @@ async fn unread_anything(
         LEFT JOIN read_cursors c ON c.agent_id = $1 AND c.scope = $4
         WHERE m.team_id = $2
           AND m.id > COALESCE(c.last_message_id, 0)
-          AND m.sender_agent_id <> $1
+          -- Same rule as the wake filter: only this session's own messages
+          -- are excluded, so a sibling window's announcement still counts.
+          AND NOT (m.sender_agent_id = $1 AND COALESCE(m.sender_session, '') = $3)
           AND ((m.channel_id IS NOT NULL
                 -- Same rule as the wake filter: an announcement counts as
                 -- pending whatever this session is focused on. Reporting a
@@ -300,8 +302,15 @@ impl Bus {
             {
                 continue;
             }
-            // Your own messages are not news to you.
-            if event.kind() == "message" && event.sender_agent_id() == Some(auth.agent_id) {
+            // Your own messages are not news to you — but "you" is this
+            // session, not the person. Excluding by agent alone meant an
+            // announcement from your general window never woke the repository
+            // windows it was written for, which is the coordination pattern
+            // sessions exist to enable.
+            if event.kind() == "message"
+                && event.sender_agent_id() == Some(auth.agent_id)
+                && event.sender_session().unwrap_or("") == auth.session
+            {
                 continue;
             }
             if let Some(described) = describe(&self.db, &event).await {

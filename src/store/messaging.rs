@@ -279,7 +279,11 @@ pub async fn post_message(
 
     // A direct message already arrives unfiltered — the focus rule never
     // applies to it — so the flag would promise something it does not change.
-    if input.announce && input.to.is_some() {
+    //
+    // Only when `to` is set *without* `channel`: with both set, the mutual
+    // exclusion below is the real problem, and reporting this one instead
+    // would send the caller to fix the wrong thing.
+    if input.announce && input.to.is_some() && input.channel.is_none() {
         return Err(BusError::invalid(
             "`announce` applies to channel messages. A direct message already reaches \
              its recipient whatever they are focused on, so drop the flag, or post to \
