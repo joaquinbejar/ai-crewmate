@@ -50,19 +50,40 @@ impl BusEvent {
         self.0.get("id").and_then(|v| v.as_i64())
     }
 
+    /// Working context this message was addressed to, if it was addressed to
+    /// one. Absent means every session of the recipient.
+    pub fn recipient_session(&self) -> Option<&str> {
+        self.0.get("recipient_session").and_then(|v| v.as_str())
+    }
+
     pub fn is_direct_message(&self) -> bool {
         self.kind() == "message" && self.recipient_agent_id().is_some()
     }
 
-    /// Is this event visible to `agent` of `team`? Direct messages are only
-    /// visible to their recipient (and sender); everything else is team-wide.
-    pub fn visible_to(&self, team_id: Uuid, agent_id: Uuid) -> bool {
+    /// Is this event visible to `session` of `agent` of `team`?
+    ///
+    /// Direct messages are only visible to their recipient (and sender);
+    /// everything else is team-wide. A message addressed to one session does
+    /// not wake the recipient's other sessions — otherwise every window of a
+    /// person would wake for a question meant for one of them. It still
+    /// reaches every session of the *sender*, which is how a reply finds the
+    /// window that is blocked waiting for it.
+    pub fn visible_to(&self, team_id: Uuid, agent_id: Uuid, session: &str) -> bool {
         if self.team_id() != Some(team_id) {
             return false;
         }
         if self.is_direct_message() {
-            return self.recipient_agent_id() == Some(agent_id)
-                || self.sender_agent_id() == Some(agent_id);
+            if self.sender_agent_id() == Some(agent_id) {
+                return true;
+            }
+            if self.recipient_agent_id() != Some(agent_id) {
+                return false;
+            }
+            return match self.recipient_session() {
+                Some(addressed) => addressed == session,
+                // Addressed to the person: every one of their sessions.
+                None => true,
+            };
         }
         true
     }

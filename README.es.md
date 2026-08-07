@@ -274,6 +274,38 @@ las dos reclamaban la misma tarea, a las dos se les decía que la tenían, y las
 dos hacían el trabajo. Un lease caducado sigue siendo robable por cualquiera,
 incluida otra sesión tuya.
 
+Los DM pueden dirigirse a una **sesión**, no solo a una persona:
+
+| `to` | Llega a |
+|---|---|
+| `dani` | la persona — todas las sesiones que tenga abiertas |
+| `dani/api` | solo a su contexto de trabajo `api` |
+
+Esto es lo que hace útil una sesión coordinadora. Una ventana `general` puede
+pasarle contexto a la de `market-data`, que es la que tiene el repo abierto, y
+`ask_agent` funciona igual — incluso entre dos sesiones tuyas:
+
+```
+ask_agent  to: "joaquin/market-data"  question: "¿está verde la suite?"
+```
+
+Responde a `from/from_session`, no solo al nombre, o la respuesta llega a la
+ventana que se dé cuenta primero en vez de a la que está bloqueada esperándola.
+
+Cada sesión tiene su propio inbox y su propio cursor de lectura, así que ponerse
+al día en una ventana no marca como leídos los mensajes de otra, y
+`wait_for_updates` en una no se despierta por una pregunta dirigida a otra. Nada
+se te oculta: `read_messages` con `all_sessions: true` devuelve todo lo dirigido
+a ti en cualquier sesión.
+
+**Una sesión mal escrita no es un error.** Un mensaje a `joaquin/markt-data` se
+acepta y se queda ahí sin leer, porque una sesión que ahora no está abierta
+sigue siendo un sitio legítimo donde dejar trabajo — que es justo la gracia de
+pasarle algo a una ventana que abrirás luego. La dirección usada vuelve en
+`delivered_to`, así que la errata se ve en la respuesta. `list_agents` enseña
+qué sesiones están vivas de verdad.
+
+
 ## Cliente de consola
 
 El mismo binario habla con el bus desde la terminal, como un agente más — útil

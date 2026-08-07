@@ -19,8 +19,10 @@ const MAX_TOPIC_BYTES: usize = 256;
 struct MessageRow {
     id: i64,
     sender: String,
+    sender_session: Option<String>,
     channel: Option<String>,
     recipient: Option<String>,
+    recipient_session: Option<String>,
     body: String,
     reply_to: Option<i64>,
     metadata: serde_json::Value,
@@ -33,8 +35,10 @@ impl From<MessageRow> for MessageInfo {
         MessageInfo {
             id: r.id,
             from: r.sender,
+            from_session: r.sender_session.filter(|s| !s.is_empty()),
             channel: r.channel,
             to: r.recipient,
+            to_session: r.recipient_session.filter(|s| !s.is_empty()),
             body: r.body,
             reply_to: r.reply_to,
             metadata: r.metadata,
@@ -47,8 +51,10 @@ impl From<MessageRow> for MessageInfo {
 const MESSAGE_SELECT: &str = r#"
     SELECT m.id,
            s.name  AS sender,
+           m.sender_session,
            ch.name AS channel,
            r.name  AS recipient,
+           m.recipient_session,
            m.body,
            m.reply_to,
            m.metadata,
@@ -144,6 +150,77 @@ pub async fn list_channels(pool: &PgPool, auth: &AuthCtx) -> BusResult<ChannelLi
 
 // ---------------------------------------------------------------- posting --
 
+/// Split `agent[/session]` into its parts.
+///
+/// No slash means the person: every session of theirs sees it, which is what
+/// addressing a teammate has always meant. With a slash, one working context
+/// of theirs — including one of your own, which is how a coordinating session
+/// hands work to the window that has the repository open.
+///
+/// The session half is normalised exactly as the `X-Crew-Session` header is,
+/// so `joaquin/Market-Data` reaches the session that announced itself as
+/// `market-data`.
+pub fn parse_address(raw: &str) -> BusResult<(String, Option<String>)> {
+    let raw = raw.trim();
+    match raw.split_once('/') {
+        None => Ok((raw.to_owned(), None)),
+        Some((agent, session)) => {
+            let agent = agent.trim();
+            if agent.is_empty() {
+                return Err(BusError::invalid(
+                    "an address is 'agent' or 'agent/session'; the agent part is missing",
+                ));
+            }
+            // The same validator the X-Crew-Session header uses. A label a
+            // header would reject must not be reachable by addressing it
+            // instead — otherwise a caller could store sessions that can never
+            // connect, and unbounded strings with them.
+            let session = crate::auth::normalize_session(session)
+                .map_err(|why| BusError::invalid(format!("the session in '{raw}' {why}")))?;
+            if session.is_empty() {
+                return Err(BusError::invalid(format!(
+                    "'{raw}' has an empty session; write '{agent}' to reach every \
+                     session of theirs, or '{agent}/<session>' for one of them"
+                )));
+            }
+            Ok((agent.to_owned(), Some(session)))
+        }
+    }
+}
+
+/// Read-cursor key for a scope, kept apart per session and per view.
+///
+/// Two windows of one person track their own reading position; sharing the
+/// cursor would mean reading in one marks the other's messages read. The
+/// cross-session view keeps its own for the same reason.
+///
+/// Collision-free by construction: `/` is the one character a session label
+/// may not contain, so it is the separator. Concatenating a mode suffix would
+/// not be — the per-session cursor for a session called `api+all-sessions`
+/// would be byte-identical to the cross-session cursor for `api`, and reading
+/// one view would silently skip messages in the other.
+///
+/// The shared session with the default view keeps the bare `base`, so cursors
+/// written before sessions existed are still the ones read.
+pub fn cursor_scope(base: &str, session: &str) -> String {
+    cursor_scope_for(base, session, false)
+}
+
+pub fn cursor_scope_for(base: &str, session: &str, all_sessions: bool) -> String {
+    match (session.is_empty(), all_sessions) {
+        (true, false) => base.to_owned(),
+        (_, false) => format!("{base}/s/{session}"),
+        (_, true) => format!("{base}/a/{session}"),
+    }
+}
+
+/// SQL predicate for "a direct message this session should see": addressed to
+/// the session by name, or to the person with no session named.
+///
+/// `$1` is the agent, `$2` the session label.
+pub const DM_FOR_SESSION: &str =
+    "m.recipient_agent_id = $1 AND (m.recipient_session IS NULL OR m.recipient_session = $2)";
+
 pub struct PostInput {
     pub channel: Option<String>,
     pub to: Option<String>,
@@ -172,7 +249,10 @@ pub async fn post_message(
         )));
     }
 
-    let (channel_id, recipient_id, delivered_to) = match (&input.channel, &input.to) {
+    let (channel_id, recipient_id, recipient_session, delivered_to) = match (
+        &input.channel,
+        &input.to,
+    ) {
         (Some(_), Some(_)) => {
             return Err(BusError::invalid(
                 "set either `channel` or `to`, not both: a message is either broadcast or direct",
@@ -195,12 +275,34 @@ pub async fn post_message(
             (
                 Some(id),
                 None,
+                None,
                 names.into_iter().map(|r| r.0).collect::<Vec<_>>(),
             )
         }
         (None, Some(to)) => {
-            let id = agent_id_by_name(pool, auth.team_id, to).await?;
-            (None, Some(id), vec![to.trim().to_owned()])
+            let (agent, session) = parse_address(to)?;
+            let id = agent_id_by_name(pool, auth.team_id, &agent).await?;
+            // Talking to the window you are already in is a mistake worth
+            // naming: nothing would ever read it, and a note or a channel is
+            // what the caller actually wants.
+            // Only the exact calling window is refused. Addressing yourself as
+            // a *person* is allowed and useful: it reaches your other windows,
+            // including ones not open yet — the same reason a message to a
+            // session that is currently closed is accepted.
+            if id == auth.agent_id && session.as_deref() == Some(auth.session.as_str()) {
+                return Err(BusError::invalid(
+                    "that address is this session — a message to yourself here would \
+                     never be read. Use set_note to leave something durable, post to \
+                     a channel, or address another of your sessions as 'you/<session>'.",
+                ));
+            }
+            // Reported back so a mistyped session shows up in the response
+            // rather than becoming a message nobody ever opens.
+            let label = match &session {
+                Some(s) => format!("{agent}/{s}"),
+                None => agent.clone(),
+            };
+            (None, Some(id), session, vec![label])
         }
     };
 
@@ -229,8 +331,9 @@ pub async fn post_message(
     let (id,): (i64,) = sqlx::query_as(
         r#"
         INSERT INTO messages
-            (team_id, channel_id, recipient_agent_id, sender_agent_id, body, reply_to, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (team_id, channel_id, recipient_agent_id, recipient_session,
+             sender_agent_id, sender_session, body, reply_to, metadata)
+        VALUES ($1, $2, $3, $8, $4, $9, $5, $6, $7)
         RETURNING id
         "#,
     )
@@ -241,6 +344,10 @@ pub async fn post_message(
     .bind(&body)
     .bind(input.reply_to)
     .bind(&metadata)
+    .bind(recipient_session.as_deref())
+    // Recorded even on channel messages: a reply needs to know which window
+    // asked, or it goes back to whichever one happens to notice.
+    .bind(super::session_label(auth))
     .fetch_one(&mut *tx)
     .await?;
 
@@ -270,19 +377,31 @@ pub async fn find_answer(
     pool: &PgPool,
     auth: &AuthCtx,
     target_id: Uuid,
+    target_session: Option<&str>,
     question_id: i64,
 ) -> BusResult<Option<MessageInfo>> {
+    // Addressed to this session or to the person: an answer sent to another of
+    // the asker's windows is not an answer to the window that is blocked here.
+    //
+    // And when the question named a session, only that session can answer it.
+    // Matching the agent alone let any later message from a *sibling* window
+    // of the target satisfy the wait and be returned as the answer from the
+    // one that was asked.
     let row: Option<MessageRow> = sqlx::query_as(&format!(
         r#"{MESSAGE_SELECT}
            WHERE m.sender_agent_id = $1
              AND m.recipient_agent_id = $2
              AND m.id > $3
+             AND (m.recipient_session IS NULL OR m.recipient_session = $4)
+             AND ($5::text IS NULL OR COALESCE(m.sender_session, '') = $5)
            ORDER BY (m.reply_to = $3) DESC NULLS LAST, m.id
            LIMIT 1"#
     ))
     .bind(target_id)
     .bind(auth.agent_id)
     .bind(question_id)
+    .bind(&auth.session)
+    .bind(target_session)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(Into::into))
@@ -294,21 +413,32 @@ pub async fn verify_question(
     pool: &PgPool,
     auth: &AuthCtx,
     target_id: Uuid,
+    target_session: Option<&str>,
     question_id: i64,
 ) -> BusResult<()> {
+    // Sent by this session, not merely by this agent: resuming someone else's
+    // wait — even your own other window's — would hand them each other's
+    // answers.
+    // The addressee has to match too, or a question sent to one session could
+    // be resumed naming another and collect that one's answer instead.
     let exists: Option<(i64,)> = sqlx::query_as(
         "SELECT id FROM messages
-         WHERE id = $1 AND sender_agent_id = $2 AND recipient_agent_id = $3",
+         WHERE id = $1 AND sender_agent_id = $2 AND recipient_agent_id = $3
+           AND COALESCE(sender_session, '') = $4
+           AND recipient_session IS NOT DISTINCT FROM $5",
     )
     .bind(question_id)
     .bind(auth.agent_id)
     .bind(target_id)
+    .bind(&auth.session)
+    .bind(target_session)
     .fetch_optional(pool)
     .await?;
     if exists.is_none() {
         return Err(BusError::invalid(format!(
-            "message {question_id} is not a question you sent to this agent; \
-             pass the question_message_id returned by ask_agent"
+            "message {question_id} is not a question this session sent to that exact \
+             address; pass the question_message_id returned by ask_agent in this \
+             session, with the same `to`"
         )));
     }
     Ok(())
@@ -324,12 +454,15 @@ enum Scope {
 }
 
 impl Scope {
-    fn cursor_key(&self) -> String {
-        match self {
-            Scope::All => "all".into(),
-            Scope::Inbox => "inbox".into(),
+    /// Namespaced per session: two windows of one person each track their own
+    /// reading position, so catching up in one does not mark the other read.
+    fn cursor_key_for(&self, auth: &AuthCtx, all_sessions: bool) -> String {
+        let base = match self {
+            Scope::All => "all".to_owned(),
+            Scope::Inbox => "inbox".to_owned(),
             Scope::Channel { id, .. } => format!("channel:{id}"),
-        }
+        };
+        cursor_scope_for(&base, &auth.session, all_sessions)
     }
     fn label(&self) -> String {
         match self {
@@ -356,6 +489,10 @@ pub struct ReadInput {
     pub scope: String,
     pub only_new: bool,
     pub limit: i64,
+    /// Include direct messages addressed to your *other* sessions. Off by
+    /// default so a window sees its own work, on when you want the whole
+    /// picture — the bus never hides a person's own messages from them.
+    pub all_sessions: bool,
 }
 
 pub async fn read_messages(
@@ -365,7 +502,11 @@ pub async fn read_messages(
 ) -> BusResult<MessageList> {
     let scope = resolve_scope(pool, auth, &input.scope).await?;
     let limit = input.limit.clamp(1, MAX_LIMIT);
-    let cursor_key = scope.cursor_key();
+    // Reading across sessions is a different view of a different set of
+    // messages, so it keeps its own cursor rather than moving this session's.
+    let cursor_key = scope.cursor_key_for(auth, input.all_sessions);
+    // `false` widens the DM filter to every session of this agent.
+    let session_filter = input.all_sessions;
 
     let since: i64 = if input.only_new {
         sqlx::query_as::<_, (i64,)>(
@@ -391,7 +532,10 @@ pub async fn read_messages(
                    WHERE m.team_id = $1
                      AND m.id > $2
                      AND (m.channel_id IS NOT NULL
-                          OR m.recipient_agent_id = $3
+                          OR (m.recipient_agent_id = $3
+                              AND ($5::bool
+                                   OR m.recipient_session IS NULL
+                                   OR m.recipient_session = $6))
                           OR m.sender_agent_id = $3)
                    ORDER BY m.id DESC
                    LIMIT $4"#
@@ -400,19 +544,27 @@ pub async fn read_messages(
             .bind(since)
             .bind(auth.agent_id)
             .bind(limit)
+            .bind(session_filter)
+            .bind(&auth.session)
             .fetch_all(pool)
             .await?
         }
         Scope::Inbox => {
             sqlx::query_as(&format!(
                 r#"{MESSAGE_SELECT}
-                   WHERE m.recipient_agent_id = $1 AND m.id > $2
+                   WHERE m.recipient_agent_id = $1
+                     AND m.id > $2
+                     AND ($4::bool
+                          OR m.recipient_session IS NULL
+                          OR m.recipient_session = $5)
                    ORDER BY m.id DESC
                    LIMIT $3"#
             ))
             .bind(auth.agent_id)
             .bind(since)
             .bind(limit)
+            .bind(session_filter)
+            .bind(&auth.session)
             .fetch_all(pool)
             .await?
         }
@@ -500,4 +652,60 @@ pub async fn search_messages(
         cursor,
         truncated,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_validates_its_session_like_the_header_does() {
+        // A label the X-Crew-Session header would reject must not be reachable
+        // by addressing it instead.
+        assert!(parse_address(&format!("dani/{}", "x".repeat(1000))).is_err());
+        assert!(parse_address("dani/${BUS_SESSION}").is_err());
+        assert!(parse_address("dani/api\u{7f}").is_err());
+        assert!(parse_address("dani/").is_err());
+        assert!(parse_address("/api").is_err());
+    }
+
+    #[test]
+    fn an_address_normalises_its_session_like_the_header_does() {
+        assert_eq!(
+            parse_address("dani/ Market-Data ").unwrap(),
+            ("dani".to_owned(), Some("market-data".to_owned()))
+        );
+        assert_eq!(parse_address("dani").unwrap(), ("dani".to_owned(), None));
+    }
+
+    #[test]
+    fn cursor_keys_cannot_collide_between_a_session_and_a_view() {
+        // The trap: concatenating a mode suffix makes the per-session cursor
+        // for a session called `api+all-sessions` byte-identical to the
+        // cross-session cursor for `api`, so reading one view advances the
+        // other and silently skips messages.
+        let per_session_of_odd_label = cursor_scope_for("inbox", "api+all-sessions", false);
+        let all_sessions_of_api = cursor_scope_for("inbox", "api", true);
+        assert_ne!(per_session_of_odd_label, all_sessions_of_api);
+
+        // Every combination stays distinct.
+        let keys = [
+            cursor_scope_for("inbox", "", false),
+            cursor_scope_for("inbox", "", true),
+            cursor_scope_for("inbox", "api", false),
+            cursor_scope_for("inbox", "api", true),
+            per_session_of_odd_label,
+            cursor_scope_for("inbox", "api+all-sessions", true),
+        ];
+        let unique: std::collections::HashSet<&String> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "{keys:?}");
+    }
+
+    #[test]
+    fn the_shared_session_keeps_the_cursor_it_already_had() {
+        // Cursors written before sessions existed must still be the ones read,
+        // or every agent re-reads its whole history once on upgrade.
+        assert_eq!(cursor_scope_for("inbox", "", false), "inbox");
+        assert_eq!(cursor_scope_for("all", "", false), "all");
+    }
 }

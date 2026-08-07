@@ -104,6 +104,9 @@ pub enum ClientCmd {
         history: bool,
         #[arg(long, default_value_t = 50)]
         limit: i64,
+        /// Include direct messages addressed to your other sessions.
+        #[arg(long)]
+        all_sessions: bool,
     },
     /// Full-text search messages.
     Search {

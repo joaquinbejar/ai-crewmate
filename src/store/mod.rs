@@ -110,25 +110,35 @@ pub async fn channel_id_by_name(pool: &PgPool, team_id: Uuid, name: &str) -> Bus
 }
 
 pub async fn whoami(pool: &PgPool, auth: &AuthCtx) -> BusResult<WhoAmI> {
+    // This session's inbox, with this session's cursor: what another window of
+    // yours has waiting is not this window's backlog.
     let (unread,): (i64,) = sqlx::query_as(
         r#"
         SELECT count(*)
         FROM messages m
         LEFT JOIN read_cursors c
-               ON c.agent_id = $1 AND c.scope = 'inbox'
+               ON c.agent_id = $1 AND c.scope = $3
         WHERE m.recipient_agent_id = $1
           AND m.id > COALESCE(c.last_message_id, 0)
+          AND (m.recipient_session IS NULL OR m.recipient_session = $2)
         "#,
     )
     .bind(auth.agent_id)
+    .bind(&auth.session)
+    .bind(messaging::cursor_scope("inbox", &auth.session))
     .fetch_one(pool)
     .await?;
 
-    let (claimed,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM tasks WHERE claimed_by = $1 AND status = 'claimed'")
-            .bind(auth.agent_id)
-            .fetch_one(pool)
-            .await?;
+    // Claims belong to the session that took them, so count this one's.
+    let (claimed,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM tasks
+          WHERE claimed_by = $1 AND status = 'claimed'
+            AND COALESCE(claimed_session, '') = $2",
+    )
+    .bind(auth.agent_id)
+    .bind(&auth.session)
+    .fetch_one(pool)
+    .await?;
 
     Ok(WhoAmI {
         agent: auth.agent_name.clone(),

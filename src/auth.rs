@@ -44,6 +44,61 @@ pub struct AuthCtx {
 /// Normalised the way channel names are (trimmed, lower-cased) so that
 /// `Market-Data` and `market-data` are one session rather than two that
 /// silently fail to see each other's claims.
+/// Normalise and validate a session label, wherever it arrives from.
+///
+/// Shared by the `X-Crew-Session` header and by the `agent/session` half of a
+/// message address: a label a header would reject must not be reachable by
+/// addressing it instead, or a caller could store sessions that can never
+/// exist, and unbounded strings with them.
+///
+/// Normalised the way channel names are (trimmed, lower-cased) so that
+/// `Market-Data` and `market-data` are one session rather than two that
+/// silently fail to see each other's claims. Returns the reason on rejection
+/// so each caller can wrap it in its own error type.
+pub fn normalize_session(raw: &str) -> Result<String, String> {
+    let label = raw.trim().to_lowercase();
+    if label.is_empty() {
+        return Ok(String::new());
+    }
+    if label.len() > MAX_SESSION_BYTES {
+        return Err(format!(
+            "is {} bytes; the limit is {MAX_SESSION_BYTES}. Use a short label, \
+             such as the repository name",
+            label.len()
+        ));
+    }
+    if !label.is_ascii() {
+        return Err("must be ASCII".to_owned());
+    }
+    if label.chars().any(char::is_control) {
+        return Err("must not contain control characters".to_owned());
+    }
+    // A client whose config format has no default syntax sends the template
+    // itself when the variable is unset. Silently becoming a session named
+    // '${bus_session}' would split presence and claims for a reason nobody
+    // would think to look for.
+    if label.contains(['$', '{', '}']) {
+        return Err(
+            "looks like an unexpanded variable. Set the variable, or use a form \
+                    with a fallback such as ${BUS_SESSION:-} so an unset value sends \
+                    nothing at all"
+                .to_owned(),
+        );
+    }
+    // Reserved: a direct message addresses `agent/session`, so a session
+    // containing a slash would make that address ambiguous — and it is what
+    // keeps the read-cursor keys collision-free.
+    if label.contains('/') {
+        return Err(
+            "must not contain '/', which separates agent from session when \
+                    addressing a message"
+                .to_owned(),
+        );
+    }
+    Ok(label)
+}
+
+/// Read the session label from the request headers.
 fn session_from_headers(headers: &axum::http::HeaderMap) -> Result<String, AuthError> {
     let Some(value) = headers.get(SESSION_HEADER) else {
         return Ok(String::new());
@@ -51,32 +106,7 @@ fn session_from_headers(headers: &axum::http::HeaderMap) -> Result<String, AuthE
     let raw = value
         .to_str()
         .map_err(|_| AuthError::BadSession("must be ASCII".to_owned()))?;
-    let label = raw.trim().to_lowercase();
-    if label.is_empty() {
-        return Ok(String::new());
-    }
-    if label.len() > MAX_SESSION_BYTES {
-        return Err(AuthError::BadSession(format!(
-            "is {} bytes; the limit is {MAX_SESSION_BYTES}. Use a short label, \
-             such as the repository name",
-            label.len()
-        )));
-    }
-    if label.chars().any(char::is_control) {
-        return Err(AuthError::BadSession(
-            "must not contain control characters".to_owned(),
-        ));
-    }
-    // Reserved: a direct message addresses `agent/session`, so a session
-    // containing a slash would make that address ambiguous.
-    if label.contains('/') {
-        return Err(AuthError::BadSession(
-            "must not contain '/', which separates agent from session when \
-             addressing a message"
-                .to_owned(),
-        ));
-    }
-    Ok(label)
+    normalize_session(raw).map_err(AuthError::BadSession)
 }
 
 /// Generate a fresh opaque token. Returned once, never stored in the clear.
