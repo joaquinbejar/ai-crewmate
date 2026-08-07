@@ -86,6 +86,97 @@ assert isinstance(h, int) and 1 <= h <= 336, h
 done
 ok "BUS_DIGEST_HOURS guard keeps the digest request well-formed"
 
+# --- the Stop drain: oldest unanswered question, once each -------------------
+cp "$ROOT/stop-drain.sh" "$WORK/bin/stop-drain.sh"
+
+# The fake bus answers read_messages with $1 and whoami with a fixed identity.
+drain() {
+    # $1 = messages array JSON, $2 = session id
+    cat > "$WORK/bin/bus-call.sh" <<FAKE
+#!/bin/sh
+if [ "\$1" = "whoami" ]; then
+    echo '{"result":{"structuredContent":{"agent":"joaquin","team":"layerv"}}}'
+else
+    cat <<'RESP'
+{"result":{"structuredContent":{"messages":$1}}}
+RESP
+fi
+FAKE
+    chmod +x "$WORK/bin/bus-call.sh"
+    printf '{"session_id":"%s"}' "$2" \
+        | TMPDIR="$WORK" BUS_URL=http://example.invalid/mcp BUS_TOKEN=acs_test \
+          sh "$WORK/bin/stop-drain.sh" 2>/dev/null
+}
+
+NONE='[{"id":7,"from":"dani","to":"joaquin","body":"fyi","metadata":{}}]'
+ONE='[{"id":9,"from":"dani","from_session":"api","to":"joaquin","body":"is it green?","metadata":{"question":true}}]'
+# Two queued questions, oldest first in wall-clock order.
+TWO='[{"id":9,"from":"dani","to":"joaquin","body":"older one","metadata":{"question":true}},
+      {"id":11,"from":"marta","to":"joaquin","body":"newer one","metadata":{"question":true}}]'
+# The same question, already answered during normal work.
+ANSWERED='[{"id":9,"from":"dani","to":"joaquin","body":"is it green?","metadata":{"question":true}},
+           {"id":10,"from":"joaquin","to":"dani","reply_to":9,"body":"yes","metadata":{}}]'
+
+out="$(drain "$NONE" sess-a)"
+[ -z "$out" ] && ok "no pending question means the session stops normally" \
+    || bad "drain stays quiet without a question" "$out"
+
+out="$(drain "$ONE" sess-b)"
+printf '%s' "$out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["decision"] == "block", d
+ctx = d["hookSpecificOutput"]["additionalContext"]
+assert "is it green?" in ctx, ctx
+assert "dani/api" in ctx, "the reply must be addressed to the asking session"
+assert "reply_to: 9" in ctx, ctx
+' 2>/dev/null && ok "a pending question holds the session open with the question" \
+    || bad "drain blocks on a question" "$out"
+
+# The loop guard: blocking again on the same question would trap the session
+# going round forever.
+out="$(drain "$ONE" sess-b)"
+[ -z "$out" ] && ok "the same question never blocks the session twice" \
+    || bad "drain loop guard" "$out"
+
+# A different session has its own guard, so it still gets its turn.
+out="$(drain "$ONE" sess-c)"
+[ -n "$out" ] && ok "the guard is per session, not global" \
+    || bad "drain guard is per session" "empty"
+
+# A question already answered during normal work must not be reopened on the
+# way out: metadata says "this is a question", never "this one is still open".
+out="$(drain "$ANSWERED" sess-d)"
+[ -z "$out" ] && ok "an answered question is not raised again at Stop" \
+    || bad "drain reopens an answered question" "$out"
+
+# Two queued questions: the older caller has waited longest and is unblocked
+# first, and the newer one survives to the next Stop rather than being
+# suppressed by a high-water mark.
+out="$(drain "$TWO" sess-e)"
+printf '%s' "$out" | python3 -c '
+import json, sys
+ctx = json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]
+assert "older one" in ctx, ctx
+assert "reply_to: 9" in ctx, ctx
+assert "1 other question(s)" in ctx, ctx
+' 2>/dev/null && ok "the oldest waiting question is drained first" \
+    || bad "drain picks the oldest" "$out"
+
+out="$(drain "$TWO" sess-e)"
+printf '%s' "$out" | python3 -c '
+import json, sys
+ctx = json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]
+assert "newer one" in ctx, ctx
+assert "reply_to: 11" in ctx, ctx
+' 2>/dev/null && ok "the second question is not lost behind the first" \
+    || bad "drain loses a queued question" "$out"
+
+# Unconfigured bus: silent, as every hook must be.
+out="$(printf '{"session_id":"sess-f"}' | TMPDIR="$WORK" sh "$WORK/bin/stop-drain.sh" 2>/dev/null)"
+[ -z "$out" ] && ok "no BUS_URL/BUS_TOKEN means the hook does nothing" \
+    || bad "drain without a configured bus" "$out"
+
 # --- every tool the hooks call exists in the served schema ------------------
 # Cheap coupling check: the tool names the scripts use must appear in the
 # server's tool router. Catches a rename before a user's session breaks.

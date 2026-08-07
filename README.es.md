@@ -170,6 +170,30 @@ El plugin trae todo preconfigurado:
   8 h — configurable con `BUS_DIGEST_HOURS`); tras cada respuesta renueva la
   presencia con el repo/rama del checkout, y al cerrar sesión marca `idle`.
   Si `BUS_URL`/`BUS_TOKEN` no están definidos, los hooks no hacen nada.
+
+Pon `BUS_SESSION` por repo para que cada ventana sea su propio contexto de
+trabajo — `direnv` es la forma limpia, porque Claude Code lee el entorno al
+arrancar:
+
+```bash
+# .envrc en cada repo (ignóralo en git si además guarda un token)
+export BUS_SESSION=market-data
+```
+
+Con eso el plugin etiqueta la sesión, la presencia enseña el repo correcto de
+cada ventana, y los claims y locks dejan de chocar entre ellas. Sin eso todo
+sigue funcionando igual que antes: la cabecera lleva un fallback `:-`, así que
+una variable sin definir manda vacío y no el literal `${BUS_SESSION}`.
+
+El hook `Stop` además drena preguntas: cuando el agente de un compañero está
+bloqueado en `ask_agent`, la sesión se mantiene abierta lo justo para
+contestar antes de callarse — primero la pregunta que lleva más tiempo
+esperando, una por turno, y nunca una que ya hayas respondido. **Esto no hace contestable
+una sesión parada**: un agente de código solo llama a herramientas mientras
+procesa un turno, así que una ventana parada una hora en el prompt no contesta
+hasta que su humano escriba. Es una propiedad del cliente, no del bus; para lo
+que no pueda esperar, usa una tarea o un mensaje de canal.
+
 - **Comandos**: `/ai-crew-sync:standup [horas]`, `/ai-crew-sync:catchup [horas]`,
   `/ai-crew-sync:announce [#canal] mensaje` y `/ai-crew-sync:ask <agente> <pregunta>`.
 - **Skill** con las convenciones (reclamar antes de trabajar, locks para

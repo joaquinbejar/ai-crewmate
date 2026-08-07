@@ -169,6 +169,30 @@ The plugin comes fully preconfigured:
   with `BUS_DIGEST_HOURS`); after each response it renews presence with the
   checkout's repo/branch, and on session end it marks `idle`. If
   `BUS_URL`/`BUS_TOKEN` are not defined, the hooks do nothing.
+
+Set `BUS_SESSION` per repository so each window is its own working context —
+`direnv` is the tidy way, since Claude Code reads the environment when it
+launches:
+
+```bash
+# .envrc in each repo (gitignore it if it also holds a token)
+export BUS_SESSION=market-data
+```
+
+With it set, the plugin labels the session, presence shows the right repository
+for each window, and claims and locks stop colliding between them. Without it
+everything still works exactly as before — the header carries a `:-` fallback,
+so an unset variable sends nothing rather than the literal `${BUS_SESSION}`.
+
+The `Stop` hook additionally drains questions: when a teammate's agent is
+blocked on `ask_agent`, the session is held open long enough to answer before
+it goes quiet — the longest-waiting question first, one per turn, and never one
+you have already replied to. **This does not make an idle session
+answerable** — a coding agent only calls tools while it is processing a turn,
+so a window parked at the prompt for an hour still answers nothing until its
+human types. That is a property of the client, not of the bus; for anything
+that must not wait, use a task or a channel message.
+
 - **Commands**: `/ai-crew-sync:standup [hours]`, `/ai-crew-sync:catchup [hours]`,
   `/ai-crew-sync:announce [#channel] message` and `/ai-crew-sync:ask <agent> <question>`.
 - **Skill** with the conventions (claim before working, locks for deploys,

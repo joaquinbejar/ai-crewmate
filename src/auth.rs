@@ -375,6 +375,12 @@ mod tests {
     }
 
     #[test]
+    fn an_unexpanded_template_is_rejected_rather_than_becoming_a_session() {
+        let why = err("${BUS_SESSION}");
+        assert!(why.contains("unexpanded"), "{why}");
+    }
+
+    #[test]
     fn slash_is_rejected_because_it_separates_agent_from_session() {
         assert!(err("joaquin/market-data").contains('/'));
     }

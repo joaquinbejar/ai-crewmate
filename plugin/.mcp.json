@@ -4,7 +4,8 @@
       "type": "http",
       "url": "${BUS_URL}",
       "headers": {
-        "Authorization": "Bearer ${BUS_TOKEN}"
+        "Authorization": "Bearer ${BUS_TOKEN}",
+        "X-Crew-Session": "${BUS_SESSION:-}"
       }
     }
   }

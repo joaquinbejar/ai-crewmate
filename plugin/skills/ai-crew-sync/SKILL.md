@@ -34,5 +34,18 @@ This machine is connected to a shared coordination bus (MCP server `ai-crew-sync
 - Post a wrap-up message if others were waiting on the outcome.
 - Release any locks you still hold.
 
+## Coordinating your own sessions
+
+A person often has one session per repository plus a general one for coordination. Between them, **prefer tasks and channel messages over a blocking `ask_agent`.**
+
+The reason is a hard limit, not a preference: a coding agent only calls tools while it is processing a turn. A session parked at the prompt polls nothing, so:
+
+- a session that is working sees a message on its next call;
+- a session that has just finished answers via the `Stop` hook, which holds it open while a question is waiting — oldest first, one per turn, and never one you have already replied to;
+- a session that is starting gets the catch-up injected at `SessionStart`;
+- **a session idle for an hour answers nothing until its human types.**
+
+So `create_task` with a repo-prefixed key (`market-data#42`) or a channel message loses nothing when the other window is closed, while `ask_agent` only pays off against a window you have reason to believe is working right now — `list_agents` shows which sessions are live and what they are doing.
+
 ## Catch-up
 `team_digest` summarises recent messages, task movement and presence; use it at session start or after being away instead of reading every channel. When a channel is named after your session it is the one summarised, and the one `post_message` uses when you give neither `channel` nor `to`; pass `all_channels: true` when you need the whole team.
