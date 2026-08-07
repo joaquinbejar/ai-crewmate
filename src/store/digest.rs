@@ -10,8 +10,21 @@ use crate::{
 
 /// A team-wide summary of the last `hours` hours: what moved, who did it and
 /// where things stand. Everything in it is team-visible (no direct messages).
-pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult<DigestResult> {
+pub async fn team_digest(
+    pool: &PgPool,
+    auth: &AuthCtx,
+    hours: i64,
+    all_channels: bool,
+) -> BusResult<DigestResult> {
     let hours = hours.clamp(1, 24 * 14);
+    // A session catching up wants its own repository first. Passing NULL keeps
+    // the whole-team digest, which is what the shared session always gets.
+    let focus = match all_channels {
+        true => None,
+        false => super::messaging::default_channel(pool, auth)
+            .await?
+            .map(|(id, _)| id),
+    };
 
     // Channel activity: volume plus the tail of the conversation.
     //
@@ -33,6 +46,7 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
             JOIN agents a   ON a.id = m.sender_agent_id
             WHERE c.team_id = $1
               AND m.created_at > now() - make_interval(hours => $2)
+              AND ($3::uuid IS NULL OR c.id = $3)
         )
         SELECT channel,
                max(message_count) AS message_count,
@@ -48,6 +62,7 @@ pub async fn team_digest(pool: &PgPool, auth: &AuthCtx, hours: i64) -> BusResult
     )
     .bind(auth.team_id)
     .bind(hours as i32)
+    .bind(focus)
     .fetch_all(pool)
     .await?;
 

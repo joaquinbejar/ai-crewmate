@@ -304,6 +304,26 @@ something to a window you will open later. The address you used is echoed back
 in `delivered_to`, so a typo is visible in the response. `list_agents` shows
 which sessions are actually live.
 
+### The session's channel
+
+Name a channel after a session and it becomes that session's default: with
+neither `channel` nor `to`, `post_message` lands there, `team_digest`
+summarises it, and `wait_for_updates` stops waking for chatter in other
+repositories' channels. Direct messages, tasks, locks and notes always wake
+you — silencing those would hide work rather than noise. `all_channels: true`
+opts back into the whole team on either call, and an explicit `channel` always
+wins.
+
+Resolved by name each time, with no binding to configure and nothing to keep
+in sync. A team that does not name channels after repositories simply gets no
+default, and says where each message goes exactly as it does today —
+`whoami` reports the resolved channel, or `null` when there is none.
+
+`read_messages` deliberately keeps `"all"` as its default scope. Narrowing it
+to one channel would drop your direct messages from the default read, which
+is where questions arrive.
+
+
 
 ## Console client
 

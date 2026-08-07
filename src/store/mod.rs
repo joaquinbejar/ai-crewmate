@@ -140,6 +140,11 @@ pub async fn whoami(pool: &PgPool, auth: &AuthCtx) -> BusResult<WhoAmI> {
     .fetch_one(pool)
     .await?;
 
+    // Resolved, not configured: what this session would post to right now.
+    let default_channel = messaging::default_channel(pool, auth)
+        .await?
+        .map(|(_, name)| name);
+
     Ok(WhoAmI {
         agent: auth.agent_name.clone(),
         agent_id: auth.agent_id.to_string(),
@@ -148,6 +153,7 @@ pub async fn whoami(pool: &PgPool, auth: &AuthCtx) -> BusResult<WhoAmI> {
         // Stored as '' and reported as null: the database wants a value in a
         // primary key, the caller wants "you are not in a named session".
         session: session_label(auth),
+        default_channel,
         unread_direct_messages: unread,
         open_claimed_tasks: claimed,
     })

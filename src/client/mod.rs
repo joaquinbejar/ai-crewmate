@@ -167,6 +167,9 @@ pub enum ClientCmd {
         /// Restrict to kinds: message, task, lock, note.
         #[arg(long, value_delimiter = ',')]
         kinds: Vec<String>,
+        /// Wake on every channel, not only the one this session works in.
+        #[arg(long)]
+        all_channels: bool,
     },
     /// Advisory locks on shared resources.
     #[command(subcommand)]
@@ -175,6 +178,9 @@ pub enum ClientCmd {
     Digest {
         #[arg(long, default_value_t = 24)]
         hours: i64,
+        /// Cover every channel, not only the one this session works in.
+        #[arg(long)]
+        all_channels: bool,
     },
     /// Escape hatch: call any tool with raw JSON arguments.
     Call {

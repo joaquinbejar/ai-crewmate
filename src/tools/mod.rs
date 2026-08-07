@@ -141,7 +141,13 @@ impl Bus {
     ) -> Result<Json<DigestResult>, ErrorData> {
         let auth = auth_of(&ctx)?;
         Ok(Json(
-            store::digest::team_digest(&self.db, &auth, args.hours.unwrap_or(24)).await?,
+            store::digest::team_digest(
+                &self.db,
+                &auth,
+                args.hours.unwrap_or(24),
+                args.all_channels,
+            )
+            .await?,
         ))
     }
 }
@@ -151,6 +157,11 @@ pub struct DigestArgs {
     /// Window to summarise, in hours (1-336). Defaults to 24.
     #[serde(default)]
     pub hours: Option<i64>,
+    /// Summarise every channel instead of only the one this session works in.
+    /// Has no effect when your session has no matching channel, where the
+    /// digest already covers the whole team.
+    #[serde(default)]
+    pub all_channels: bool,
 }
 
 #[tool_handler(router = self.tool_router)]
