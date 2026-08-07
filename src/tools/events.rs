@@ -75,7 +75,11 @@ async fn unread_anything(
           AND m.id > COALESCE(c.last_message_id, 0)
           AND m.sender_agent_id <> $1
           AND ((m.channel_id IS NOT NULL
-                AND ($5::uuid IS NULL OR m.channel_id = $5))
+                -- Same rule as the wake filter: an announcement counts as
+                -- pending whatever this session is focused on. Reporting a
+                -- backlog the wait would not wake for is a lie the caller
+                -- cannot act on.
+                AND ($5::uuid IS NULL OR m.channel_id = $5 OR m.announce))
                OR (m.recipient_agent_id = $1
                    AND (m.recipient_session IS NULL OR m.recipient_session = $3)))
         "#,
@@ -95,6 +99,12 @@ async fn unread_anything(
 /// note is not tied to a channel, and silencing those would hide work rather
 /// than noise.
 fn in_focus(event: &BusEvent, focus: Option<Uuid>) -> bool {
+    // An announcement is the sender saying "this one is for everyone, even if
+    // you are concentrating". Filtering it by channel would silence exactly
+    // the message the flag exists to deliver.
+    if event.is_announcement() {
+        return true;
+    }
     match (focus, event.channel_id()) {
         (Some(channel), Some(posted_in)) => channel == posted_in,
         _ => true,

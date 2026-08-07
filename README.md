@@ -347,6 +347,28 @@ default, and says where each message goes exactly as it does today —
 to one channel would drop your direct messages from the default read, which
 is where questions arrive.
 
+### Announcements
+
+A channel message only wakes the sessions focused on that channel, which is
+what makes the focus useful — and what would silence the one message that must
+not wait. Flag those:
+
+```
+post_message  channel: "general"  announce: true
+              body: "migration 0010 lands in 5 min, stop pushing to main"
+```
+
+An announcement reaches **every session in the team**, whatever each one is
+working on, and appears in a focused `team_digest` too. It is one message with
+one id in one channel — not a copy per channel — so replies and `reply_to`
+still work.
+
+Reserve it for what genuinely blocks others: deploys, migrations, breaking
+changes. A team interrupted for routine progress stops reading announcements,
+and then the one that mattered is missed as well. The flag is rejected on a
+direct message, which already arrives unfiltered.
+
+
 
 
 ## Console client

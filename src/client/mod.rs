@@ -62,6 +62,10 @@ pub enum ClientCmd {
         to: Option<String>,
         #[arg(long)]
         body: String,
+        /// Interrupt every session in the team, not just those watching this
+        /// channel. For deploys, migrations and breaking changes.
+        #[arg(long)]
+        announce: bool,
         #[arg(long)]
         reply_to: Option<i64>,
         /// Attach a file (repeatable). Max 8 files, 256 KiB each.

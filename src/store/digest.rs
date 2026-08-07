@@ -46,7 +46,9 @@ pub async fn team_digest(
             JOIN agents a   ON a.id = m.sender_agent_id
             WHERE c.team_id = $1
               AND m.created_at > now() - make_interval(hours => $2)
-              AND ($3::uuid IS NULL OR c.id = $3)
+              -- An announcement belongs in every catch-up: a session focused
+              -- on its own repository still needs to know a migration landed.
+              AND ($3::uuid IS NULL OR c.id = $3 OR m.announce)
         )
         SELECT channel,
                max(message_count) AS message_count,

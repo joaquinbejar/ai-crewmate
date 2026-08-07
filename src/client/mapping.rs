@@ -58,6 +58,7 @@ pub(super) fn to_call(cmd: &ClientCmd) -> anyhow::Result<Option<(&'static str, V
             channel,
             to,
             body,
+            announce,
             reply_to,
             file,
         } => {
@@ -68,7 +69,8 @@ pub(super) fn to_call(cmd: &ClientCmd) -> anyhow::Result<Option<(&'static str, V
             (
                 "post_message",
                 json!({
-                    "channel": channel, "to": to, "body": body, "reply_to": reply_to,
+                    "channel": channel, "to": to, "body": body,
+                    "announce": announce, "reply_to": reply_to,
                     "attachments": if attachments.is_empty() { Value::Null } else { json!(attachments) }
                 }),
             )
@@ -237,6 +239,7 @@ mod tests {
                 channel: Some("dev".into()),
                 to: None,
                 body: "hi".into(),
+                announce: false,
                 reply_to: None,
                 file: vec![],
             },
@@ -314,6 +317,7 @@ mod tests {
             channel: None,
             to: Some("marta".into()),
             body: "hi".into(),
+            announce: false,
             reply_to: Some(7),
             file: vec![],
         });

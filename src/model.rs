@@ -119,6 +119,10 @@ pub struct MessageInfo {
     /// shared session. Reply to `from/from_session` to reach the window that
     /// is waiting, rather than whichever one notices first.
     pub from_session: Option<String>,
+    /// True when this was posted as an announcement: something the sender
+    /// judged worth interrupting the whole team for, so it reaches every
+    /// session regardless of which channel they are focused on.
+    pub announce: bool,
     /// Channel name for channel messages; `null` for direct messages.
     pub channel: Option<String>,
     /// Recipient handle for direct messages; `null` for channel messages.

@@ -348,6 +348,28 @@ hoy — `whoami` informa del canal resuelto, o `null` si no hay.
 a un canal dejaría fuera tus mensajes directos de la lectura por defecto, que
 es justo por donde llegan las preguntas.
 
+### Anuncios
+
+Un mensaje de canal solo despierta a las sesiones enfocadas en ese canal — que
+es lo que hace útil el foco, y lo que silenciaría justo el mensaje que no puede
+esperar. Para esos, el flag:
+
+```
+post_message  channel: "general"  announce: true
+              body: "la migración 0010 entra en 5 min, no empujéis a main"
+```
+
+Un anuncio llega a **todas las sesiones del equipo**, estén en lo que estén, y
+sale también en un `team_digest` enfocado. Es un mensaje con un id en un canal
+—no una copia por canal— así que las respuestas y `reply_to` siguen
+funcionando.
+
+Resérvalo para lo que de verdad bloquea a otros: despliegues, migraciones,
+cambios que rompen. Un equipo al que interrumpes por todo deja de leer los
+anuncios, y entonces también se pierde el que importaba. En un mensaje directo
+el flag se rechaza: ese ya llega sin filtrar.
+
+
 
 
 ## Cliente de consola

@@ -63,6 +63,15 @@ pub struct PostMessageArgs {
     /// Channel to broadcast to. Mutually exclusive with `to`.
     #[serde(default)]
     pub channel: Option<String>,
+    /// Interrupt the whole team with this one. A channel message normally
+    /// only wakes sessions focused on that channel; an announcement wakes
+    /// every session, whatever they are working on. Reserve it for what
+    /// genuinely blocks others — a deploy, a migration, a breaking change,
+    /// "stop pushing to main". Routine progress does not qualify, and a team
+    /// that is interrupted for everything stops reading announcements.
+    /// Channel messages only: a direct message already arrives unfiltered.
+    #[serde(default)]
+    pub announce: bool,
     /// Who to send a direct message to. Mutually exclusive with `channel`.
     /// `"dani"` reaches every session that teammate has open; `"dani/api"`
     /// reaches only their `api` working context. Addressing one of your own
@@ -200,6 +209,7 @@ impl Bus {
         let input = messaging::PostInput {
             channel: args.channel,
             to: args.to,
+            announce: args.announce,
             body: args.body,
             reply_to: args.reply_to,
             metadata: args.metadata,
@@ -313,6 +323,9 @@ impl Bus {
                     messaging::PostInput {
                         channel: None,
                         to: Some(to.clone()),
+                        // A question is a direct message; it already reaches
+                        // the addressee whatever they are focused on.
+                        announce: false,
                         body: question.to_owned(),
                         reply_to: None,
                         metadata: Some(serde_json::json!({ "question": true })),

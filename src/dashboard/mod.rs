@@ -305,10 +305,19 @@ async fn build_page(pool: &PgPool, auth: &AuthCtx) -> Result<String, sqlx::Error
 
     let mut msg_rows = String::new();
     for m in messages.iter().rev() {
+        // Marked with an icon and a word, never colour alone: an announcement
+        // is what the team was interrupted for, and the panel should say so.
+        let channel = if m.announce {
+            format!(
+                "#{} <span class=\"st st-warning\">●</span> announced",
+                esc(&m.channel)
+            )
+        } else {
+            format!("#{}", esc(&m.channel))
+        };
         msg_rows.push_str(&format!(
-            "<tr><td class=\"muted\">{}</td><td>#{}</td><td><strong>{}</strong></td><td>{}</td></tr>",
+            "<tr><td class=\"muted\">{}</td><td>{channel}</td><td><strong>{}</strong></td><td>{}</td></tr>",
             ago(m.created_at),
-            esc(&m.channel),
             esc(&m.sender),
             esc(&m.body),
         ));

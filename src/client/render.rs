@@ -31,7 +31,10 @@ fn render_messages(value: &Value) {
         // the person.
         let target = m["channel"]
             .as_str()
-            .map(|c| format!("#{c}"))
+            .map(|c| match m["announce"].as_bool() {
+                Some(true) => format!("#{c} [announcement]"),
+                _ => format!("#{c}"),
+            })
             .or_else(|| {
                 m["to"].as_str().map(|t| match m["to_session"].as_str() {
                     Some(s) => format!("@{t}/{s}"),

@@ -46,6 +46,9 @@ pub struct MessageRow {
     pub id: i64,
     pub channel: String,
     pub sender: String,
+    /// Posted as an announcement — worth marking, since it is what the team
+    /// was interrupted for.
+    pub announce: bool,
     pub body: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -204,7 +207,8 @@ async fn load_tasks(pool: &PgPool, team_id: Uuid) -> Result<Vec<TaskRow>, sqlx::
 async fn load_messages(pool: &PgPool, team_id: Uuid) -> Result<Vec<MessageRow>, sqlx::Error> {
     sqlx::query_as(
         r#"
-        SELECT m.id, ch.name AS channel, s.name AS sender, left(m.body, 240) AS body, m.created_at
+        SELECT m.id, ch.name AS channel, s.name AS sender, m.announce,
+               left(m.body, 240) AS body, m.created_at
         FROM messages m
         JOIN channels ch ON ch.id = m.channel_id
         JOIN agents s    ON s.id = m.sender_agent_id

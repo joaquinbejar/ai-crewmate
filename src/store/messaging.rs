@@ -20,6 +20,7 @@ struct MessageRow {
     id: i64,
     sender: String,
     sender_session: Option<String>,
+    announce: bool,
     channel: Option<String>,
     recipient: Option<String>,
     recipient_session: Option<String>,
@@ -36,6 +37,7 @@ impl From<MessageRow> for MessageInfo {
             id: r.id,
             from: r.sender,
             from_session: r.sender_session.filter(|s| !s.is_empty()),
+            announce: r.announce,
             channel: r.channel,
             to: r.recipient,
             to_session: r.recipient_session.filter(|s| !s.is_empty()),
@@ -52,6 +54,7 @@ const MESSAGE_SELECT: &str = r#"
     SELECT m.id,
            s.name  AS sender,
            m.sender_session,
+           m.announce,
            ch.name AS channel,
            r.name  AS recipient,
            m.recipient_session,
@@ -246,6 +249,9 @@ pub const DM_FOR_SESSION: &str =
 pub struct PostInput {
     pub channel: Option<String>,
     pub to: Option<String>,
+    /// Reach every session of the team even when they are focused on their own
+    /// channel. Channel messages only.
+    pub announce: bool,
     pub body: String,
     pub reply_to: Option<i64>,
     pub metadata: Option<serde_json::Value>,
@@ -269,6 +275,16 @@ pub async fn post_message(
              Attach the file instead of pasting it, or split the message.",
             body.len()
         )));
+    }
+
+    // A direct message already arrives unfiltered — the focus rule never
+    // applies to it — so the flag would promise something it does not change.
+    if input.announce && input.to.is_some() {
+        return Err(BusError::invalid(
+            "`announce` applies to channel messages. A direct message already reaches \
+             its recipient whatever they are focused on, so drop the flag, or post to \
+             a channel if the whole team needs to see this.",
+        ));
     }
 
     let (channel_id, recipient_id, recipient_session, delivered_to) = match (
@@ -380,8 +396,8 @@ pub async fn post_message(
         r#"
         INSERT INTO messages
             (team_id, channel_id, recipient_agent_id, recipient_session,
-             sender_agent_id, sender_session, body, reply_to, metadata)
-        VALUES ($1, $2, $3, $8, $4, $9, $5, $6, $7)
+             sender_agent_id, sender_session, body, reply_to, metadata, announce)
+        VALUES ($1, $2, $3, $8, $4, $9, $5, $6, $7, $10)
         RETURNING id
         "#,
     )
@@ -396,6 +412,7 @@ pub async fn post_message(
     // Recorded even on channel messages: a reply needs to know which window
     // asked, or it goes back to whichever one happens to notice.
     .bind(super::session_label(auth))
+    .bind(input.announce)
     .fetch_one(&mut *tx)
     .await?;
 
