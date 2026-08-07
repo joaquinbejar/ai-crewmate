@@ -446,7 +446,7 @@ then `cargo run -- serve` (migrates on startup) and
 
 ### Toolchain policy
 
-The crate's MSRV is the `rust-version` in `Cargo.toml` (**1.88**). CI proves
+The crate's MSRV is the `rust-version` in `Cargo.toml` (**1.97.1**). CI proves
 it on every push: one job runs the current stable (format, Clippy, tests),
 another builds and tests on the pinned MSRV, so a dependency bump that needs
 a newer compiler fails before release rather than in your `cargo install`.
@@ -455,10 +455,15 @@ Raising the MSRV is a deliberate change — bump `rust-version`, the pin in
 `.github/workflows/ci.yml`, and this paragraph in the same PR, and say why in
 the release notes.
 
-The Docker image builds with a **newer** compiler than the MSRV on purpose
-(current codegen and security fixes for the published binary); the MSRV job
-is what guards the floor. The runtime image must track the Debian release of
-the builder image, or the binary links against a glibc the runtime lacks.
+The MSRV is high on purpose, and it costs something worth stating: building
+from source with `cargo install` needs a compiler at least this new, so
+distributions shipping an older Rust cannot. The container image and the
+prebuilt binaries are unaffected — neither compiles anything on your machine.
+
+The Docker image builds on the same version, on Alpine, so the binary is
+statically linked against musl. That is what frees the runtime stage from
+having to track the builder's distribution — the pairing that broke v0.4.0,
+where a glibc binary met an older glibc runtime and the image would not start.
 
 Tagged releases run the full CI gate, then boot the freshly built image
 against a real Postgres and make an authenticated MCP call, and only then

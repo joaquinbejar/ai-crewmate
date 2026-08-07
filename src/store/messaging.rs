@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 use super::{agent_id_by_name, channel_id_by_name, normalize_channel};
@@ -425,10 +425,11 @@ pub async fn post_message(
             .await?;
     }
 
-    let row: MessageRow = sqlx::query_as(&format!("{MESSAGE_SELECT} WHERE m.id = $1"))
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let row: MessageRow =
+        sqlx::query_as(AssertSqlSafe(format!("{MESSAGE_SELECT} WHERE m.id = $1")))
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     tx.commit().await?;
 
@@ -456,7 +457,7 @@ pub async fn find_answer(
     // Matching the agent alone let any later message from a *sibling* window
     // of the target satisfy the wait and be returned as the answer from the
     // one that was asked.
-    let row: Option<MessageRow> = sqlx::query_as(&format!(
+    let row: Option<MessageRow> = sqlx::query_as(AssertSqlSafe(format!(
         r#"{MESSAGE_SELECT}
            WHERE m.sender_agent_id = $1
              AND m.recipient_agent_id = $2
@@ -465,7 +466,7 @@ pub async fn find_answer(
              AND ($5::text IS NULL OR COALESCE(m.sender_session, '') = $5)
            ORDER BY (m.reply_to = $3) DESC NULLS LAST, m.id
            LIMIT 1"#
-    ))
+    )))
     .bind(target_id)
     .bind(auth.agent_id)
     .bind(question_id)
@@ -597,7 +598,7 @@ pub async fn read_messages(
     // flip them back, so "the last N messages" is what you get.
     let rows: Vec<MessageRow> = match &scope {
         Scope::All => {
-            sqlx::query_as(&format!(
+            sqlx::query_as(AssertSqlSafe(format!(
                 r#"{MESSAGE_SELECT}
                    WHERE m.team_id = $1
                      AND m.id > $2
@@ -609,7 +610,7 @@ pub async fn read_messages(
                           OR m.sender_agent_id = $3)
                    ORDER BY m.id DESC
                    LIMIT $4"#
-            ))
+            )))
             .bind(auth.team_id)
             .bind(since)
             .bind(auth.agent_id)
@@ -620,7 +621,7 @@ pub async fn read_messages(
             .await?
         }
         Scope::Inbox => {
-            sqlx::query_as(&format!(
+            sqlx::query_as(AssertSqlSafe(format!(
                 r#"{MESSAGE_SELECT}
                    WHERE m.recipient_agent_id = $1
                      AND m.id > $2
@@ -629,7 +630,7 @@ pub async fn read_messages(
                           OR m.recipient_session = $5)
                    ORDER BY m.id DESC
                    LIMIT $3"#
-            ))
+            )))
             .bind(auth.agent_id)
             .bind(since)
             .bind(limit)
@@ -639,12 +640,12 @@ pub async fn read_messages(
             .await?
         }
         Scope::Channel { id, .. } => {
-            sqlx::query_as(&format!(
+            sqlx::query_as(AssertSqlSafe(format!(
                 r#"{MESSAGE_SELECT}
                    WHERE m.channel_id = $1 AND m.id > $2
                    ORDER BY m.id DESC
                    LIMIT $3"#
-            ))
+            )))
             .bind(*id)
             .bind(since)
             .bind(limit)
@@ -695,7 +696,7 @@ pub async fn search_messages(
     }
     let limit = limit.clamp(1, MAX_LIMIT);
 
-    let rows: Vec<MessageRow> = sqlx::query_as(&format!(
+    let rows: Vec<MessageRow> = sqlx::query_as(AssertSqlSafe(format!(
         r#"{MESSAGE_SELECT}
            WHERE m.team_id = $1
              AND (m.channel_id IS NOT NULL
@@ -704,7 +705,7 @@ pub async fn search_messages(
              AND to_tsvector('simple', m.body) @@ plainto_tsquery('simple', $3)
            ORDER BY m.id DESC
            LIMIT $4"#
-    ))
+    )))
     .bind(auth.team_id)
     .bind(auth.agent_id)
     .bind(query)

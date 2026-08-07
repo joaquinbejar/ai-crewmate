@@ -79,9 +79,12 @@ impl Harness {
         }
         // Best effort: a failure here must not fail an otherwise green test,
         // and `setup` drops the schema on the way in regardless.
-        let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.schema))
-            .execute(&self.pool)
-            .await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {} CASCADE",
+            self.schema
+        )))
+        .execute(&self.pool)
+        .await;
         self.pool.close().await;
     }
 }
@@ -133,7 +136,7 @@ async fn setup(schema: &str) -> Option<Harness> {
             move |conn, _| {
                 let schema = schema.clone();
                 Box::pin(async move {
-                    sqlx::query(&format!("SET search_path TO {schema}"))
+                    sqlx::query(sqlx::AssertSqlSafe(format!("SET search_path TO {schema}")))
                         .execute(&mut *conn)
                         .await?;
                     Ok(())
@@ -144,11 +147,13 @@ async fn setup(schema: &str) -> Option<Harness> {
         .await
         .expect("connect");
 
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS {schema} CASCADE"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&pool)
         .await
         .unwrap();
@@ -283,7 +288,7 @@ async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
             move |conn, _| {
                 let schema = schema.clone();
                 Box::pin(async move {
-                    sqlx::query(&format!("SET search_path TO {schema}"))
+                    sqlx::query(sqlx::AssertSqlSafe(format!("SET search_path TO {schema}")))
                         .execute(&mut *conn)
                         .await?;
                     Ok(())
@@ -293,11 +298,13 @@ async fn setup_rate_limited(schema: &str, per_minute: u32) -> Option<Harness> {
         .connect(&url)
         .await
         .expect("connect");
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS {schema} CASCADE"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&pool)
         .await
         .unwrap();

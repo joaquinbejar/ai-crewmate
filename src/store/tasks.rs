@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 use crate::{
@@ -255,9 +255,9 @@ pub async fn create_task(pool: &PgPool, auth: &AuthCtx, input: CreateInput) -> B
 }
 
 async fn fetch_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult<TaskInfo> {
-    let row: Option<TaskRow> = sqlx::query_as(&format!(
+    let row: Option<TaskRow> = sqlx::query_as(AssertSqlSafe(format!(
         "{TASK_SELECT} WHERE t.team_id = $1 AND t.key = $2"
-    ))
+    )))
     .bind(auth.team_id)
     .bind(key)
     .fetch_optional(pool)
@@ -323,7 +323,7 @@ pub async fn list_tasks(
         ));
     }
 
-    let rows: Vec<TaskRow> = sqlx::query_as(&format!(
+    let rows: Vec<TaskRow> = sqlx::query_as(AssertSqlSafe(format!(
         r#"{TASK_SELECT}
            WHERE t.team_id = $1
              AND ($2::text IS NULL OR t.status = $2)
@@ -337,7 +337,7 @@ pub async fn list_tasks(
              CASE t.status WHEN 'claimed' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
              t.updated_at DESC
            LIMIT $5"#
-    ))
+    )))
     .bind(auth.team_id)
     .bind(status.as_deref())
     .bind(mine_only)
