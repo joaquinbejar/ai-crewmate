@@ -23,6 +23,8 @@ agente (el tuyo, el de cada compañero) se conecta con su propio token y puede:
 | Presencia (quién está en qué repo/rama haciendo qué), con las sesiones abiertas de cada compañero bajo su nombre | `heartbeat`, `list_agents` |
 | Memoria compartida del equipo (notas con historial) | `set_note`, `get_note`, `list_notes`, `search_notes`, `delete_note` |
 | **Resumen de actividad** de las últimas N horas | `team_digest` |
+| **Sesiones**: un token, un contexto de trabajo por repo | cabecera `X-Crew-Session` (abajo) |
+| **Anuncios** que llegan a todas las sesiones estén en lo que estén | `announce` en `post_message` |
 | Identidad | `whoami` |
 
 Decisiones de diseño:
@@ -132,11 +134,57 @@ ai-crew-sync agent add --team acme --name joaquin     # imprime su token
 ai-crew-sync agent add --team acme --name marta
 ```
 
-Convención útil para `--name`: `persona` o `persona-maquina` (`joaquin-laptop`)
-si alguien usa varias máquinas. El token se enseña **una sola vez**.
+El token se enseña **una sola vez**.
 
 Gestión posterior: `agent list`, `agent disable`, `token issue`, `token list`,
 `token revoke`.
+
+### Un agente por herramienta, no por persona
+
+Si usas Claude Code *y* Codex —o dos agentes de código cualesquiera— dale a
+cada uno su propio agente:
+
+```bash
+ai-crew-sync agent add --team acme --name joaquin        --with-token   # Claude Code
+ai-crew-sync agent add --team acme --name joaquin-codex  --with-token   # Codex
+```
+
+Compartir un token entre dos herramientas las convierte en **el mismo agente**
+para el bus, y la coordinación deja de funcionar entre ellas en silencio: las
+dos reclaman la misma tarea y a las dos se les dice que la tienen, una suelta
+el lock de la otra, sus heartbeats se pisan, y leer en una marca como leídos
+los mensajes de la otra. Nada da error — son indistinguibles, así que no hay
+nada que rechazar.
+
+Con agentes separados todo eso funciona como debe, revocarle el acceso a una
+herramienta no toca la otra, y además pueden hablarse: `ask_agent` de Claude
+Code a `joaquin-codex` se comporta igual que preguntarle a un compañero.
+
+**Los conflictos de fichero no son problema del bus.** Dos agentes editando
+los mismos ficheros a la vez se pelearán diga lo que diga el bus. Los claims y
+los locks son la herramienta para eso, y alguien tiene que usarlos — o darle a
+cada agente su rama o su worktree.
+
+### Canales, claves de tarea y nombres de lock
+
+Un canal por repo más uno para el equipo:
+
+```
+create_channel market-data
+create_channel core-manager
+create_channel general
+```
+
+Llamar a un canal como un repo es lo que hace funcionar el canal por defecto de
+la sesión — ver [Sesiones](#sesiones-una-persona-varios-repos) más abajo.
+
+Dos convenciones que importan en cuanto un equipo tiene más de un repo:
+
+- **Las claves de tarea son únicas por equipo, no por repo.** `issue-151`
+  colisiona en cuanto dos repos tienen una; ponles prefijo: `market-data#42`,
+  `core-manager#151`.
+- **Los nombres de lock también son de todo el equipo.** Un `deploy` cogido
+  para un repo bloquea el despliegue del otro; usa `market-data:deploy`.
 
 ## Conectar cada agente
 
@@ -371,6 +419,61 @@ el flag se rechaza: ese ya llega sin filtrar.
 
 
 
+
+## Actualizar
+
+El bus, el CLI y el plugin de Claude Code se mueven por separado. Nada los
+coordina por ti, así que actualiza primero el servidor: es la única pieza
+dueña del esquema.
+
+**El servidor.** Las migraciones son aditivas por norma, así que un binario
+nuevo lee una base que escribió uno viejo y al revés. Eso es lo que hace
+seguro un reinicio rodante y superable una vuelta atrás.
+
+```bash
+export BUS_VERSION=0.6.0
+make deploy                                    # Swarm; o:
+docker compose -f Docker/docker-compose.yml pull && \
+  docker compose -f Docker/docker-compose.yml up -d
+```
+
+El contenedor migra al arrancar (`BUS_AUTO_MIGRATE=true`). Con el `.deb`, el
+`.rpm` o Homebrew, migra a propósito:
+
+```bash
+sudo systemctl stop ai-crew-sync
+sudo dpkg -i ai-crew-sync_amd64.deb            # o rpm -U / brew upgrade
+sudo -u ai-crew-sync ai-crew-sync migrate
+sudo systemctl start ai-crew-sync
+```
+
+**El cliente de consola y el CLI de operador** son el mismo binario que el
+servidor:
+
+```bash
+brew upgrade joaquinbejar/tap/ai-crew-sync     # o cargo install ai-crew-sync
+ai-crew-sync --version
+```
+
+**El plugin de Claude Code.** Los marketplaces de terceros tienen la
+autoactualización **desactivada** por defecto, así que refréscalo tú y recarga:
+
+```
+/plugin marketplace update ai-crew-sync
+/reload-plugins
+```
+
+Quien no haga ninguna de las dos cosas se queda con la versión que instaló:
+Claude Code solo ofrece actualización cuando cambia el campo `version` del
+plugin, así que una release que añade hooks o cambia un comando no le llega a
+nadie hasta que se refresca el marketplace. Si prefieres no pensar en ello,
+activa la autoactualización en `/plugin` → **Marketplaces**.
+
+**Los demás clientes MCP** —Codex, Cursor, Zed, un script— no tienen nada que
+actualizar. Las herramientas viven en el servidor, así que una herramienta o un
+argumento nuevos aparecen la próxima vez que el cliente reconecta. Las
+**cabeceras** nuevas, como `X-Crew-Session`, son la excepción: esas viven en la
+configuración del cliente y hay que añadirlas a mano.
 
 ## Cliente de consola
 
