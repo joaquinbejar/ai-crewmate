@@ -46,9 +46,14 @@ fn render_messages(value: &Value) {
 }
 
 fn render_task_line(t: &Value) {
+    // The session is what tells two of your own windows apart, so it belongs
+    // next to the name whenever there is one.
     let holder = t["claimed_by"]
         .as_str()
-        .map(|h| format!(" ({h})"))
+        .map(|h| match t["claimed_session"].as_str() {
+            Some(s) => format!(" ({h}/{s})"),
+            None => format!(" ({h})"),
+        })
         .unwrap_or_default();
     let expired = if t["lease_expired"].as_bool() == Some(true) {
         " [lease expired]"
@@ -257,10 +262,13 @@ pub(super) fn render(cmd: &ClientCmd, value: &Value) -> anyhow::Result<()> {
                 println!("(no locks held)");
             }
             for l in &locks {
+                let holder = match l["holder_session"].as_str() {
+                    Some(s) => format!("{}/{s}", field(l, "holder")),
+                    None => field(l, "holder").to_owned(),
+                };
                 println!(
-                    "{:<28} {} until {}  {}",
+                    "{:<28} {holder} until {}  {}",
                     field(l, "name"),
-                    field(l, "holder"),
                     field(l, "expires_at"),
                     field(l, "purpose"),
                 );

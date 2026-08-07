@@ -259,6 +259,21 @@ dani                active  Layer-V/core-manager@issue-151       settlements v2
 `online_count` cuenta *compañeros*, no sesiones. Una sesión que deja de mandar
 heartbeat caduca sola y no toca a las demás.
 
+Un **claim y un lock pertenecen a la sesión que los tomó**, no a la persona.
+Tu ventana de `core-manager` no puede renovar, soltar ni robar una tarea que
+tiene tu ventana de `market-data`, y el error lo dice:
+
+```
+market-data#42 is claimed by your own 'market-data' session, and the lease
+expires in 240s — continue the work there, or wait for the lease to expire
+and claim it here
+```
+
+Sin eso, un token moviendo dos ventanas dejaba el lease sin valor entre ellas:
+las dos reclamaban la misma tarea, a las dos se les decía que la tenían, y las
+dos hacían el trabajo. Un lease caducado sigue siendo robable por cualquiera,
+incluida otra sesión tuya.
+
 ## Cliente de consola
 
 El mismo binario habla con el bus desde la terminal, como un agente más — útil

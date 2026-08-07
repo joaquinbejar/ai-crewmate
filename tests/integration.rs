@@ -2759,3 +2759,136 @@ async fn presence_is_tracked_per_session_not_per_person() {
     }
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_claim_belongs_to_a_session_not_to_a_person() {
+    let h = require_db!("t_session_claims");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let core = connect_with_session(&h.base, &token, "core-manager").await;
+
+    call(
+        &market,
+        "create_task",
+        json!({"key": "market-data#42", "title": "wire the feed"}),
+    )
+    .await;
+
+    let first = call(&market, "claim_task", json!({"key": "market-data#42"})).await;
+    assert_eq!(first["claimed"], true);
+    assert_eq!(first["task"]["claimed_session"], "market-data");
+
+    // The bug this fixes: before, `claimed_by = me` alone satisfied the claim
+    // predicate, so this second window was told it held the task too and both
+    // did the work.
+    let second = call(&core, "claim_task", json!({"key": "market-data#42"})).await;
+    assert_eq!(
+        second["claimed"], false,
+        "another session of the same person must not hold the same claim"
+    );
+    let reason = second["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("market-data") && reason.contains("your own"),
+        "the refusal must name the holding session: {reason}"
+    );
+
+    // Re-claiming from the holding session is still a lease renewal.
+    let renewed = call(&market, "claim_task", json!({"key": "market-data#42"})).await;
+    assert_eq!(renewed["claimed"], true, "self-renewal must keep working");
+
+    // Neither renew nor release crosses sessions, and both say who holds it.
+    for tool in ["renew_task_lease", "release_task"] {
+        let err = call_expect_error(&core, tool, json!({"key": "market-data#42"})).await;
+        assert!(
+            err.contains("market-data"),
+            "{tool} must name the holding session: {err}"
+        );
+    }
+    call(
+        &market,
+        "renew_task_lease",
+        json!({"key": "market-data#42"}),
+    )
+    .await;
+
+    // "mine" means this session's, the same rule whoami/renew/release use.
+    let mine = call(&market, "list_tasks", json!({"mine_only": true})).await;
+    assert_eq!(mine["tasks"].as_array().unwrap().len(), 1);
+    let theirs = call(&core, "list_tasks", json!({"mine_only": true})).await;
+    assert_eq!(
+        theirs["tasks"].as_array().unwrap().len(),
+        0,
+        "another window of the same token does not own this claim: {theirs}"
+    );
+
+    // Releasing clears the session with the holder it belongs to; a released
+    // task reporting claimed_by null next to a session name would describe an
+    // active holder that does not exist.
+    let released = call(&market, "release_task", json!({"key": "market-data#42"})).await;
+    assert_eq!(released["status"], "open");
+    assert_eq!(released["claimed_by"], Value::Null);
+    assert!(
+        released.get("claimed_session").is_none_or(|v| v.is_null()),
+        "the released task must name no holding session: {released}"
+    );
+    call(&market, "claim_task", json!({"key": "market-data#42"})).await;
+
+    // An expired lease is stealable by anyone, including another session.
+    sqlx::query("UPDATE tasks SET lease_expires_at = now() - interval '1 minute'")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let stolen = call(&core, "claim_task", json!({"key": "market-data#42"})).await;
+    assert_eq!(stolen["claimed"], true, "an expired lease is up for grabs");
+    assert_eq!(stolen["task"]["claimed_session"], "core-manager");
+
+    for client in [market, core] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_lock_belongs_to_a_session_not_to_a_person() {
+    let h = require_db!("t_session_locks");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let core = connect_with_session(&h.base, &token, "core-manager").await;
+
+    let taken = call(&market, "acquire_lock", json!({"name": "deploy:staging"})).await;
+    assert_eq!(taken["acquired"], true);
+    assert_eq!(taken["lock"]["holder_session"], "market-data");
+
+    // Your other window must not inherit a live deploy lock.
+    let blocked = call(&core, "acquire_lock", json!({"name": "deploy:staging"})).await;
+    assert_eq!(blocked["acquired"], false);
+    assert!(
+        blocked["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("market-data"),
+        "the refusal must name the holding session: {blocked}"
+    );
+
+    // Nor release it.
+    let err = call_expect_error(&core, "release_lock", json!({"name": "deploy:staging"})).await;
+    assert!(err.contains("market-data"), "{err}");
+
+    // Extending from the holding session still works.
+    let again = call(&market, "acquire_lock", json!({"name": "deploy:staging"})).await;
+    assert_eq!(
+        again["acquired"], true,
+        "the holder can extend its own lock"
+    );
+
+    call(&market, "release_lock", json!({"name": "deploy:staging"})).await;
+    let now_free = call(&core, "acquire_lock", json!({"name": "deploy:staging"})).await;
+    assert_eq!(now_free["acquired"], true);
+
+    for client in [market, core] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}

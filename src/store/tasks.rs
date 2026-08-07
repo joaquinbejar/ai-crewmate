@@ -32,6 +32,7 @@ struct TaskRow {
     depends_on: Vec<String>,
     blocked: bool,
     claimed_by: Option<String>,
+    claimed_session: Option<String>,
     claimed_at: Option<chrono::DateTime<chrono::Utc>>,
     lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     result: Option<String>,
@@ -44,10 +45,16 @@ struct TaskRow {
 
 impl From<TaskRow> for TaskInfo {
     fn from(r: TaskRow) -> Self {
-        let lease_expired = r.status == "claimed"
-            && r.lease_expires_at
-                .map(|e| e < chrono::Utc::now())
-                .unwrap_or(false);
+        let now = chrono::Utc::now();
+        let lease_expired =
+            r.status == "claimed" && r.lease_expires_at.map(|e| e < now).unwrap_or(false);
+        // Seconds, not a timestamp: an error that says "expires in 240s" tells
+        // the caller whether waiting is an option; an RFC 3339 instant makes it
+        // do the arithmetic first.
+        let lease_seconds_remaining = r
+            .lease_expires_at
+            .filter(|_| r.status == "claimed")
+            .map(|e| (e - now).num_seconds().max(0));
         TaskInfo {
             key: r.key,
             title: r.title,
@@ -56,9 +63,13 @@ impl From<TaskRow> for TaskInfo {
             depends_on: r.depends_on,
             blocked: r.blocked,
             claimed_by: r.claimed_by,
+            // '' and NULL both mean the shared session: NULL is a claim taken
+            // before sessions existed, by a client that sent no header.
+            claimed_session: r.claimed_session.filter(|s| !s.is_empty()),
             claimed_at: ts_opt(r.claimed_at),
             lease_expires_at: ts_opt(r.lease_expires_at),
             lease_expired,
+            lease_seconds_remaining,
             result: r.result,
             metadata: r.metadata,
             attachments: serde_json::from_value(r.attachments).unwrap_or_default(),
@@ -87,6 +98,7 @@ const TASK_SELECT: &str = r#"
                WHERE td.task_id = t.id AND d.status NOT IN ('done', 'cancelled')
            ) AS blocked,
            cb.name AS claimed_by,
+           t.claimed_session,
            t.claimed_at,
            t.lease_expires_at,
            t.result,
@@ -315,7 +327,12 @@ pub async fn list_tasks(
         r#"{TASK_SELECT}
            WHERE t.team_id = $1
              AND ($2::text IS NULL OR t.status = $2)
-             AND (NOT $3::bool OR t.claimed_by = $4)
+             -- "mine" means this session's, matching whoami, renew and
+             -- release. Matching the agent alone would report a task your
+             -- core-manager window is holding as this window's own work,
+             -- which is the duplication the session check exists to stop.
+             AND (NOT $3::bool
+                  OR (t.claimed_by = $4 AND COALESCE(t.claimed_session, '') = $6))
            ORDER BY
              CASE t.status WHEN 'claimed' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
              t.updated_at DESC
@@ -326,6 +343,7 @@ pub async fn list_tasks(
     .bind(mine_only)
     .bind(auth.agent_id)
     .bind(limit)
+    .bind(&auth.session)
     .fetch_all(pool)
     .await?;
 
@@ -367,14 +385,20 @@ pub async fn claim_task(
         UPDATE tasks
         SET status = 'claimed',
             claimed_by = $1,
+            claimed_session = $5,
             claimed_at = now(),
             lease_expires_at = now() + make_interval(secs => $2),
             updated_at = now()
         WHERE team_id = $3
           AND key = $4
           AND status IN ('open', 'claimed')
+          -- Re-claiming renews the lease, but only from the session that holds
+          -- it. Matching on the agent alone made the lease void between two
+          -- sessions of one person: both claimed, both were told they had it,
+          -- and both did the work. COALESCE so a claim taken before sessions
+          -- existed counts as the shared session, which is what it was.
           AND (status = 'open'
-               OR claimed_by = $1
+               OR (claimed_by = $1 AND COALESCE(claimed_session, '') = $5)
                OR lease_expires_at IS NULL
                OR lease_expires_at < now())
           AND NOT EXISTS (
@@ -389,6 +413,7 @@ pub async fn claim_task(
     .bind(lease as f64)
     .bind(auth.team_id)
     .bind(&key)
+    .bind(&auth.session)
     .fetch_optional(pool)
     .await?;
 
@@ -411,14 +436,7 @@ pub async fn claim_task(
                 )
             } else {
                 match current.status.as_str() {
-                    "claimed" => format!(
-                        "held by {} until {}",
-                        current.claimed_by.clone().unwrap_or_else(|| "?".into()),
-                        current
-                            .lease_expires_at
-                            .clone()
-                            .unwrap_or_else(|| "unknown".into())
-                    ),
+                    "claimed" => holder_reason(auth, &current),
                     other => format!("task is {other}"),
                 }
             };
@@ -428,6 +446,60 @@ pub async fn claim_task(
                 reason: Some(reason),
             })
         }
+    }
+}
+
+/// Why a claim was refused, written for the model that has to act on it.
+///
+/// The case worth spelling out is your *own* other session: "held by joaquin"
+/// reads as a bug when you are joaquin, and the fix — go to that window, or
+/// wait for the lease — is not guessable from the name alone.
+fn holder_reason(auth: &AuthCtx, current: &TaskInfo) -> String {
+    let holder = current.claimed_by.as_deref().unwrap_or("?");
+    let until = match current.lease_seconds_remaining {
+        Some(secs) => format!("the lease expires in {secs}s"),
+        None => "the lease expiry is unknown".to_owned(),
+    };
+    let mine = current.claimed_by.as_deref() == Some(auth.agent_name.as_str());
+    let same_session = current.claimed_session.as_deref().unwrap_or("") == auth.session;
+
+    if mine && !same_session {
+        let theirs = current
+            .claimed_session
+            .as_deref()
+            .map(|s| format!("'{s}'"))
+            .unwrap_or_else(|| "shared".to_owned());
+        format!(
+            "claimed by your own {theirs} session, and {until} — continue the \
+             work there, or wait for the lease to expire and claim it here"
+        )
+    } else {
+        let where_ = current
+            .claimed_session
+            .as_deref()
+            .map(|s| format!(" (session '{s}')"))
+            .unwrap_or_default();
+        format!("held by {holder}{where_}, {until}")
+    }
+}
+
+/// Refusal for renew/release when this session does not hold the claim.
+///
+/// "You do not hold a claim" is true but useless when your other window does:
+/// look up who actually has it and say so.
+async fn no_claim_here(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusError {
+    match fetch_task(pool, auth, key).await {
+        Ok(current) if current.status == "claimed" => BusError::conflict(format!(
+            "you do not hold the claim on '{key}': it is {}",
+            holder_reason(auth, &current)
+        )),
+        Ok(current) => BusError::conflict(format!(
+            "you do not hold an active claim on '{key}' (it is {})",
+            current.status
+        )),
+        // The task is gone or not ours to see; the original message is still
+        // the honest answer.
+        Err(_) => BusError::conflict(format!("you do not hold an active claim on '{key}'")),
     }
 }
 
@@ -462,6 +534,7 @@ pub async fn claim_next_task(
         UPDATE tasks t
         SET status = 'claimed',
             claimed_by = $2,
+            claimed_session = $4,
             claimed_at = now(),
             lease_expires_at = now() + make_interval(secs => $3),
             updated_at = now()
@@ -473,6 +546,7 @@ pub async fn claim_next_task(
     .bind(auth.team_id)
     .bind(auth.agent_id)
     .bind(lease as f64)
+    .bind(&auth.session)
     .fetch_optional(pool)
     .await?;
 
@@ -517,6 +591,7 @@ pub async fn renew_lease(
         SET lease_expires_at = now() + make_interval(secs => $1),
             updated_at = now()
         WHERE team_id = $2 AND key = $3 AND claimed_by = $4 AND status = 'claimed'
+          AND COALESCE(claimed_session, '') = $5
         RETURNING id
         "#,
     )
@@ -524,13 +599,12 @@ pub async fn renew_lease(
     .bind(auth.team_id)
     .bind(&key)
     .bind(auth.agent_id)
+    .bind(&auth.session)
     .fetch_optional(pool)
     .await?;
 
     if updated.is_none() {
-        return Err(BusError::conflict(format!(
-            "you do not hold an active claim on '{key}'"
-        )));
+        return Err(no_claim_here(pool, auth, &key).await);
     }
     fetch_task(pool, auth, &key).await
 }
@@ -542,16 +616,22 @@ pub async fn release_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult
         UPDATE tasks
         SET status = 'open',
             claimed_by = NULL,
+            -- Cleared with the holder it belongs to. Leaving it behind made a
+            -- released task report claimed_by null next to a session name,
+            -- which reads as an active holder that does not exist.
+            claimed_session = NULL,
             claimed_at = NULL,
             lease_expires_at = NULL,
             updated_at = now()
         WHERE team_id = $1 AND key = $2 AND claimed_by = $3 AND status = 'claimed'
+          AND COALESCE(claimed_session, '') = $4
         RETURNING id
         "#,
     )
     .bind(auth.team_id)
     .bind(&key)
     .bind(auth.agent_id)
+    .bind(&auth.session)
     .fetch_optional(pool)
     .await?;
 
@@ -560,9 +640,7 @@ pub async fn release_task(pool: &PgPool, auth: &AuthCtx, key: &str) -> BusResult
             log_event(pool, id, auth.agent_id, "released", None).await?;
             fetch_task(pool, auth, &key).await
         }
-        None => Err(BusError::conflict(format!(
-            "you do not hold an active claim on '{key}'"
-        ))),
+        None => Err(no_claim_here(pool, auth, &key).await),
     }
 }
 
