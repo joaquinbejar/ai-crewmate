@@ -1,13 +1,13 @@
 # ---- build stage ----------------------------------------------------------
-# Deliberately newer than the crate's MSRV (Cargo.toml `rust-version`): the
-# published binary gets current codegen and security fixes, while CI's `msrv`
-# job proves the source still compiles on the declared floor. The two move
-# independently — bumping this line is not an MSRV bump.
-FROM rust:1.95-slim AS build
+# Alpine, so the binary links against musl and is fully static. That is what
+# lets the runtime stage be a bare Alpine rather than a distribution that has
+# to match this one's libc.
+FROM rust:1.97.1-alpine3.24 AS build
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && \
-    rm -rf /var/lib/apt/lists/*
+# musl-dev provides the C toolchain the ring/rustls build scripts need; the
+# rest is what a static link wants at the end.
+RUN apk add --no-cache musl-dev pkgconf
 
 # Cache the dependency graph.
 COPY Cargo.toml Cargo.lock ./
@@ -21,12 +21,17 @@ COPY migrations ./migrations
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # ---- runtime stage ---------------------------------------------------------
-# Must track the Debian release under rust:*-slim above, or the binary links
-# against a newer glibc than the runtime ships.
-FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd --system --home /app bus
+# The build is musl-static, so this stage no longer has to track the builder's
+# distribution — the pairing that broke v0.4.0, where a glibc binary met an
+# older glibc runtime and the image would not start. Alpine here is a choice
+# about size, not a constraint.
+#
+# The release workflow still boots this image against a real Postgres and makes
+# an authenticated MCP call before publishing. That gate, not this comment, is
+# what proves the pairing works.
+FROM alpine:3.24
+RUN apk add --no-cache ca-certificates curl && \
+    adduser --system --home /app --disabled-password bus
 WORKDIR /app
 COPY --from=build /app/target/release/ai-crew-sync /usr/local/bin/ai-crew-sync
 USER bus

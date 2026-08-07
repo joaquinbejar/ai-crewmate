@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 use crate::{
@@ -100,9 +100,9 @@ pub async fn acquire_lock(
     .fetch_optional(pool)
     .await?;
 
-    let current: Option<LockRow> = sqlx::query_as(&format!(
+    let current: Option<LockRow> = sqlx::query_as(AssertSqlSafe(format!(
         "{LOCK_SELECT} WHERE l.team_id = $1 AND l.name = $2"
-    ))
+    )))
     .bind(auth.team_id)
     .bind(&name)
     .fetch_optional(pool)
@@ -203,9 +203,9 @@ pub async fn release_lock(pool: &PgPool, auth: &AuthCtx, name: &str) -> BusResul
 }
 
 pub async fn list_locks(pool: &PgPool, auth: &AuthCtx) -> BusResult<LockList> {
-    let rows: Vec<LockRow> = sqlx::query_as(&format!(
+    let rows: Vec<LockRow> = sqlx::query_as(AssertSqlSafe(format!(
         "{LOCK_SELECT} WHERE l.team_id = $1 AND l.expires_at > now() ORDER BY l.name"
-    ))
+    )))
     .bind(auth.team_id)
     .fetch_all(pool)
     .await?;

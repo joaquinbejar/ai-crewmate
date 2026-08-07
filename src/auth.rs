@@ -4,7 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -112,7 +112,7 @@ fn session_from_headers(headers: &axum::http::HeaderMap) -> Result<String, AuthE
 /// Generate a fresh opaque token. Returned once, never stored in the clear.
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     format!("{TOKEN_PREFIX}{}", hex::encode(bytes))
 }
 

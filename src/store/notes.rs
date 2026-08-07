@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 use crate::{
@@ -131,9 +131,9 @@ pub async fn get_note(
     let scope = normalize_scope(scope);
     let key = key.trim().to_owned();
 
-    let row: Option<NoteRow> = sqlx::query_as(&format!(
+    let row: Option<NoteRow> = sqlx::query_as(AssertSqlSafe(format!(
         "{NOTE_SELECT} WHERE n.team_id = $1 AND n.scope = $2 AND n.key = $3"
-    ))
+    )))
     .bind(auth.team_id)
     .bind(&scope)
     .bind(&key)
@@ -164,14 +164,14 @@ pub async fn list_notes(
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty());
 
-    let rows: Vec<NoteRow> = sqlx::query_as(&format!(
+    let rows: Vec<NoteRow> = sqlx::query_as(AssertSqlSafe(format!(
         r#"{NOTE_SELECT}
            WHERE n.team_id = $1
              AND ($2::text IS NULL OR n.scope = $2)
              AND ($3::text IS NULL OR $3 = ANY(n.tags))
            ORDER BY n.scope, n.key
            LIMIT $4"#
-    ))
+    )))
     .bind(auth.team_id)
     .bind(scope.as_deref())
     .bind(tag.as_deref())
@@ -200,7 +200,7 @@ pub async fn search_notes(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
 
-    let rows: Vec<NoteRow> = sqlx::query_as(&format!(
+    let rows: Vec<NoteRow> = sqlx::query_as(AssertSqlSafe(format!(
         r#"{NOTE_SELECT}
            WHERE n.team_id = $1
              AND ($2::text IS NULL OR n.scope = $2)
@@ -208,7 +208,7 @@ pub async fn search_notes(
                  @@ plainto_tsquery('simple', $3)
            ORDER BY n.updated_at DESC
            LIMIT $4"#
-    ))
+    )))
     .bind(auth.team_id)
     .bind(scope.as_deref())
     .bind(query)
