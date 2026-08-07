@@ -73,9 +73,15 @@ async fn unread_anything(
         LEFT JOIN read_cursors c ON c.agent_id = $1 AND c.scope = $4
         WHERE m.team_id = $2
           AND m.id > COALESCE(c.last_message_id, 0)
-          AND m.sender_agent_id <> $1
+          -- Same rule as the wake filter: only this session's own messages
+          -- are excluded, so a sibling window's announcement still counts.
+          AND NOT (m.sender_agent_id = $1 AND COALESCE(m.sender_session, '') = $3)
           AND ((m.channel_id IS NOT NULL
-                AND ($5::uuid IS NULL OR m.channel_id = $5))
+                -- Same rule as the wake filter: an announcement counts as
+                -- pending whatever this session is focused on. Reporting a
+                -- backlog the wait would not wake for is a lie the caller
+                -- cannot act on.
+                AND ($5::uuid IS NULL OR m.channel_id = $5 OR m.announce))
                OR (m.recipient_agent_id = $1
                    AND (m.recipient_session IS NULL OR m.recipient_session = $3)))
         "#,
@@ -95,6 +101,12 @@ async fn unread_anything(
 /// note is not tied to a channel, and silencing those would hide work rather
 /// than noise.
 fn in_focus(event: &BusEvent, focus: Option<Uuid>) -> bool {
+    // An announcement is the sender saying "this one is for everyone, even if
+    // you are concentrating". Filtering it by channel would silence exactly
+    // the message the flag exists to deliver.
+    if event.is_announcement() {
+        return true;
+    }
     match (focus, event.channel_id()) {
         (Some(channel), Some(posted_in)) => channel == posted_in,
         _ => true,
@@ -290,8 +302,15 @@ impl Bus {
             {
                 continue;
             }
-            // Your own messages are not news to you.
-            if event.kind() == "message" && event.sender_agent_id() == Some(auth.agent_id) {
+            // Your own messages are not news to you — but "you" is this
+            // session, not the person. Excluding by agent alone meant an
+            // announcement from your general window never woke the repository
+            // windows it was written for, which is the coordination pattern
+            // sessions exist to enable.
+            if event.kind() == "message"
+                && event.sender_agent_id() == Some(auth.agent_id)
+                && event.sender_session().unwrap_or("") == auth.session
+            {
                 continue;
             }
             if let Some(described) = describe(&self.db, &event).await {

@@ -3271,3 +3271,191 @@ async fn a_session_posts_to_and_watches_the_channel_named_after_it() {
     }
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn an_announcement_reaches_a_session_focused_elsewhere() {
+    let h = require_db!("t_announce");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+    let dani = seed_agent(&h.pool, "layerv", "dani").await;
+
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    let dani_client = connect(&h.base, &dani).await;
+
+    call(&market, "create_channel", json!({"name": "market-data"})).await;
+    call(&market, "create_channel", json!({"name": "general"})).await;
+
+    // An ordinary message in another channel must still be ignored — the
+    // announcement must not become a hole in the focus rule.
+    let quiet = tokio::spawn({
+        let market = connect_with_session(&h.base, &token, "market-data").await;
+        async move {
+            let r = call(
+                &market,
+                "wait_for_updates",
+                json!({"timeout_seconds": 6, "kinds": ["message"]}),
+            )
+            .await;
+            let _ = market.cancel().await;
+            r
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    call(
+        &dani_client,
+        "post_message",
+        json!({"channel": "general", "body": "lunch?"}),
+    )
+    .await;
+    assert_eq!(
+        quiet.await.unwrap()["timed_out"],
+        true,
+        "routine chatter elsewhere must still not wake a focused session"
+    );
+
+    // The same channel, flagged: this one gets through.
+    let waiting = tokio::spawn({
+        let market = connect_with_session(&h.base, &token, "market-data").await;
+        async move {
+            let r = call(
+                &market,
+                "wait_for_updates",
+                json!({"timeout_seconds": 10, "kinds": ["message"]}),
+            )
+            .await;
+            let _ = market.cancel().await;
+            r
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let posted = call(
+        &dani_client,
+        "post_message",
+        json!({"channel": "general", "announce": true,
+               "body": "migration 0010 lands in 5 min, stop pushing"}),
+    )
+    .await;
+    assert_eq!(posted["message"]["announce"], true);
+
+    let woke = waiting.await.unwrap();
+    assert_eq!(
+        woke["woke"], true,
+        "an announcement must reach a session focused elsewhere: {woke}"
+    );
+
+    // One message in one place — not a copy per channel — so replies work.
+    let id = posted["message"]["id"].as_i64().unwrap();
+    let seen = call(
+        &market,
+        "read_messages",
+        json!({"scope": "general", "only_new": false}),
+    )
+    .await;
+    let hits = seen["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["id"].as_i64() == Some(id))
+        .count();
+    assert_eq!(hits, 1, "an announcement is one message, not a copy each");
+
+    // A focused digest carries it too: a catch-up that omits the migration
+    // notice is the same failure one step later.
+    let digest = call(&market, "team_digest", json!({"hours": 1})).await;
+    let bodies: Vec<String> = digest["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["last_messages"].as_array().cloned().unwrap_or_default())
+        .map(|m| m["body"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        bodies.iter().any(|b| b.contains("stop pushing")),
+        "the focused digest must still list announcements: {bodies:?}"
+    );
+
+    // The flag is refused on a direct message, which already arrives unfiltered.
+    let err = call_expect_error(
+        &dani_client,
+        "post_message",
+        json!({"to": "joaquin", "announce": true, "body": "psst"}),
+    )
+    .await;
+    assert!(err.contains("channel messages"), "{err}");
+
+    for client in [market, dani_client] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn your_own_general_session_can_announce_to_your_other_windows() {
+    let h = require_db!("t_announce_self");
+    let token = seed_agent(&h.pool, "layerv", "joaquin").await;
+
+    let general = connect_with_session(&h.base, &token, "general").await;
+    let market = connect_with_session(&h.base, &token, "market-data").await;
+    call(&general, "create_channel", json!({"name": "general"})).await;
+    call(&general, "create_channel", json!({"name": "market-data"})).await;
+
+    // Live wake: the coordinating window announces, the repository window is
+    // blocked. Same token, so an agent-level "your own messages" guard would
+    // discard it and this would time out.
+    let waiting = tokio::spawn({
+        let market = connect_with_session(&h.base, &token, "market-data").await;
+        async move {
+            let r = call(
+                &market,
+                "wait_for_updates",
+                json!({"timeout_seconds": 10, "kinds": ["message"]}),
+            )
+            .await;
+            let _ = market.cancel().await;
+            r
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    call(
+        &general,
+        "post_message",
+        json!({"channel": "general", "announce": true,
+               "body": "0.6.0 goes out in 10, freeze your branches"}),
+    )
+    .await;
+    let woke = waiting.await.unwrap();
+    assert_eq!(
+        woke["woke"], true,
+        "your own general window must be able to reach your other windows: {woke}"
+    );
+
+    // Pre-check: the same must be true of the backlog path, which answers
+    // before subscribing. Reporting nothing pending here would make the wait
+    // look like a hang.
+    let pending = call(
+        &market,
+        "wait_for_updates",
+        json!({"timeout_seconds": 5, "kinds": ["message"]}),
+    )
+    .await;
+    assert_eq!(
+        pending["woke"], true,
+        "the announcement is already waiting for this window: {pending}"
+    );
+
+    // The window that sent it is still not woken by its own announcement.
+    let quiet = call(
+        &general,
+        "wait_for_updates",
+        json!({"timeout_seconds": 5, "kinds": ["message"]}),
+    )
+    .await;
+    assert_eq!(
+        quiet["timed_out"], true,
+        "the sending window must not wake on its own message: {quiet}"
+    );
+
+    for client in [general, market] {
+        let _ = client.cancel().await;
+    }
+    h.shutdown().await;
+}
