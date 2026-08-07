@@ -436,15 +436,29 @@ docker compose -f Docker/docker-compose.yml pull && \
   docker compose -f Docker/docker-compose.yml up -d
 ```
 
-The container migrates on startup (`BUS_AUTO_MIGRATE=true`). For the `.deb`,
-`.rpm` or Homebrew install, migrate deliberately instead:
+The container migrates on startup, and so does the packaged service — both
+default to `BUS_AUTO_MIGRATE=true` — so a `.deb` or `.rpm` upgrade is the
+package plus a restart:
+
+```bash
+sudo dpkg -i ai-crew-sync_amd64.deb            # or: sudo rpm -U ai-crew-sync.x86_64.rpm
+sudo systemctl restart ai-crew-sync
+```
+
+If you turned that off and migrate deliberately, run it as **root**:
+`DATABASE_URL` lives in `/etc/ai-crew-sync/ai-crew-sync.env`, which systemd
+loads for the unit and which is root-readable only, so `sudo -u ai-crew-sync`
+starts the binary without it.
 
 ```bash
 sudo systemctl stop ai-crew-sync
-sudo dpkg -i ai-crew-sync_amd64.deb            # or rpm -U / brew upgrade
-sudo -u ai-crew-sync ai-crew-sync migrate
+sudo sh -c 'set -a; . /etc/ai-crew-sync/ai-crew-sync.env; exec ai-crew-sync migrate'
 sudo systemctl start ai-crew-sync
 ```
+
+Homebrew installs the binary only — no service user, no unit, nothing to
+migrate. `brew upgrade` there updates your client and CLI, which is the next
+section.
 
 **The console client and the operator CLI** are the same binary as the
 server:
