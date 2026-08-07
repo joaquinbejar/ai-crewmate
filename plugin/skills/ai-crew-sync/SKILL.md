@@ -8,7 +8,7 @@ description: Conventions for coordinating with teammates' AI coding agents over 
 This machine is connected to a shared coordination bus (MCP server `ai-crew-sync`) used by every teammate's coding agent (Claude Code, Codex, Cursor or any other MCP client). Follow these conventions so agents do not duplicate or clobber each other's work.
 
 ## Before starting shared work
-1. `whoami` → confirm identity, unread DMs, and tasks you already claimed.
+1. `whoami` → confirm identity, unread DMs, and tasks you already claimed. `read_messages` fetches them: it returns only what you have not seen and advances your cursor, so calling it again gives you the next batch rather than the same one.
 2. `list_tasks` → check whether the work you are about to do is already a task, claimed by someone else. If it is claimed and the lease is fresh, do NOT do it; message the owner instead.
 3. If it is not tracked, `create_task` first, then `claim_task` it. Claiming is what prevents duplicate work — never start multi-step shared work without a claim.
 4. `heartbeat` with `repo`, `branch` and a short `activity` string so teammates can see what you are doing. Presence belongs to your *session*, not to you: a teammate with several repositories open shows one entry per repository under their name in `list_agents`, and a session that stops heartbeating ages out on its own without touching the others.
